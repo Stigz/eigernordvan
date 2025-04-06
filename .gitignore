@@ -1,0 +1,9 @@
+# Build artifacts
+/main
+
+# Editor settings
+.vscode/
+.idea/
+
+# System files
+.DS_Store
