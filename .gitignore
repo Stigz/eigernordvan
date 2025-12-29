@@ -1,0 +1,13 @@
+# Node
+node_modules/
+frontend/dist/
+
+# Go
+backend/dist/
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+
+# OS
+.DS_Store
