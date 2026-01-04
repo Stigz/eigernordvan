@@ -169,13 +169,14 @@ resource "aws_s3_bucket_website_configuration" "frontend" {
 resource "aws_s3_bucket_public_access_block" "frontend_public_access" {
   bucket = aws_s3_bucket.frontend_bucket.id
 
-  block_public_acls       = false
-  block_public_policy     = false
-  ignore_public_acls      = false
-  restrict_public_buckets = false
+  block_public_acls       = var.enable_frontend_public_policy ? false : true
+  block_public_policy     = var.enable_frontend_public_policy ? false : true
+  ignore_public_acls      = var.enable_frontend_public_policy ? false : true
+  restrict_public_buckets = var.enable_frontend_public_policy ? false : true
 }
 
 resource "aws_s3_bucket_policy" "frontend_public_read" {
+  count  = var.enable_frontend_public_policy ? 1 : 0
   bucket = aws_s3_bucket.frontend_bucket.id
 
   policy = jsonencode({
