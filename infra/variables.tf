@@ -27,3 +27,9 @@ variable "frontend_build_path" {
   description = "Path to the built frontend assets."
   default     = "../frontend/dist"
 }
+
+variable "enable_frontend_public_policy" {
+  type        = bool
+  description = "Whether to attach a public-read bucket policy for the frontend."
+  default     = false
+}
