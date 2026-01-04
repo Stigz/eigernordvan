@@ -21,3 +21,9 @@ variable "lambda_zip_path" {
   description = "Path to the Lambda deployment package zip."
   default     = "../backend/dist/lambda.zip"
 }
+
+variable "frontend_build_path" {
+  type        = string
+  description = "Path to the built frontend assets."
+  default     = "../frontend/dist"
+}
