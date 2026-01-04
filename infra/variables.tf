@@ -21,9 +21,3 @@ variable "lambda_zip_path" {
   description = "Path to the Lambda deployment package zip."
   default     = "../backend/dist/lambda.zip"
 }
-
-variable "frontend_bucket_name" {
-  type        = string
-  description = "S3 bucket name for the static frontend."
-  default     = "van-usage-mvp-frontend"
-}

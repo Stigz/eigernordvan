@@ -45,7 +45,7 @@ Set `VITE_API_URL` to the API Gateway URL (see Terraform outputs).
 ### Backend (local build)
 ```bash
 cd backend
-go build -o dist/bootstrap
+go build -o dist/main
 ```
 
 ## Deployment (AWS)
@@ -59,29 +59,6 @@ This runs:
 1. `go build` for the Lambda binary
 2. `zip` packaging
 3. `terraform init` and `terraform apply` in `infra/`
-
-The Lambda uses the `provided.al2023` runtime with a `bootstrap` binary because `go1.x` is deprecated on AWS Lambda.
-
-### Frontend hosting (S3 + CloudFront)
-The frontend is a static bundle built by Vite. To host it on AWS, Terraform provisions:
-- An S3 bucket for static assets
-- A CloudFront distribution for HTTPS and CDN caching
-
-Build the frontend with the API URL baked in, then sync it to S3:
-
-```bash
-export VITE_API_URL=$(cd infra && terraform output -raw api_url)
-make deploy-frontend
-```
-
-The hosted URL is available via:
-
-```bash
-cd infra
-terraform output frontend_url
-```
-
-`make deploy-all` runs the backend deploy plus the frontend upload in one go.
 
 ## API contract
 `POST /trip`
