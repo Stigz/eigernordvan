@@ -10,7 +10,7 @@ package-backend: build-backend
 	cd backend/dist && zip -q -j lambda.zip bootstrap
 
 terraform-init:
-	cd infra && terraform init
+	cd infra && terraform init -upgrade -reconfigure
 
 terraform-apply:
 	cd infra && terraform apply
