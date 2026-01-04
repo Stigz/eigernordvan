@@ -1,13 +1,13 @@
 .PHONY: build-backend package-backend terraform-init terraform-apply deploy frontend-install frontend-build
 
-LAMBDA_BIN=backend/dist/main
+LAMBDA_BIN=backend/dist/bootstrap
 LAMBDA_ZIP=backend/dist/lambda.zip
 
 build-backend:
-	cd backend && GOOS=linux GOARCH=amd64 go build -o dist/main
+	cd backend && GOOS=linux GOARCH=amd64 go build -o dist/bootstrap
 
 package-backend: build-backend
-	cd backend/dist && zip -q -j lambda.zip main
+	cd backend/dist && zip -q -j lambda.zip bootstrap
 
 terraform-init:
 	cd infra && terraform init
