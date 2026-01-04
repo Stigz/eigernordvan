@@ -5,7 +5,7 @@ output "api_url" {
 
 output "frontend_url" {
   description = "Public URL for the static frontend website."
-  value       = aws_s3_bucket_website_configuration.frontend.website_endpoint
+  value       = aws_cloudfront_distribution.frontend.domain_name
 }
 
 output "frontend_bucket_name" {
