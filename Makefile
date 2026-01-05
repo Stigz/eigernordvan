@@ -18,7 +18,7 @@ terraform-apply:
 deploy: package-backend terraform-init terraform-apply
 
 frontend-install:
-	cd frontend && npm install
+	cd frontend && if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 frontend-build:
 	cd frontend && npm run build
