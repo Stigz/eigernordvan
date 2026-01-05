@@ -1,4 +1,4 @@
-.PHONY: build-backend package-backend terraform-init terraform-apply deploy frontend-install frontend-build
+.PHONY: build-backend package-backend terraform-init terraform-apply deploy frontend-install frontend-build frontend-deploy
 
 LAMBDA_BIN=backend/dist/bootstrap
 LAMBDA_ZIP=backend/dist/lambda.zip
@@ -22,3 +22,8 @@ frontend-install:
 
 frontend-build:
 	cd frontend && npm run build
+
+frontend-deploy: terraform-init
+	cd frontend && VITE_API_URL=$$(cd ../infra && terraform output -raw api_url) npm run build
+	aws s3 sync frontend/dist s3://$$(cd infra && terraform output -raw frontend_bucket_name) --delete
+	aws cloudfront create-invalidation --distribution-id $$(cd infra && terraform output -raw frontend_distribution_id) --paths "/*"
