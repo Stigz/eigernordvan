@@ -18,12 +18,12 @@ terraform-apply:
 deploy: package-backend terraform-init terraform-apply
 
 frontend-install:
-	cd frontend && if [ -f package-lock.json ]; then npm ci --include=dev; else npm install --include=dev; fi
+	cd frontend && if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 frontend-build: frontend-install
 	cd frontend && npm run build
 
-frontend-deploy: terraform-init frontend-install
+frontend-deploy: terraform-init
 	cd frontend && VITE_API_URL=$$(cd ../infra && terraform output -raw api_url) npm run build
 	aws s3 sync frontend/dist s3://$$(cd infra && terraform output -raw frontend_bucket_name) --delete
 	aws cloudfront create-invalidation --distribution-id $$(cd infra && terraform output -raw frontend_distribution_id) --paths "/*"
