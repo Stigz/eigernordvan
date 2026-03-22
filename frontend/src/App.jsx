@@ -2,6 +2,19 @@ import { useEffect, useMemo, useState } from "react";
 
 const apiUrl = import.meta.env.VITE_API_URL;
 
+const normalizeApiBaseUrl = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "undefined" || trimmed === "null") {
+    return "";
+  }
+
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+};
+
 const initialForm = {
   user_name: "",
   start_km: "",
@@ -14,12 +27,7 @@ export default function App() {
   const [trips, setTrips] = useState([]);
   const [tableState, setTableState] = useState({ state: "loading", message: "Loading entries..." });
 
-  const apiBaseUrl = useMemo(() => {
-    if (!apiUrl) {
-      return "";
-    }
-    return apiUrl.endsWith("/") ? apiUrl.slice(0, -1) : apiUrl;
-  }, []);
+  const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
 
   const loadTrips = async () => {
     if (!apiBaseUrl) {
