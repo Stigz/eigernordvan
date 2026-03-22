@@ -10,7 +10,7 @@ If a correction is needed in the future, the system should write a new event tha
 ## Architecture
 - **Frontend:** React + Vite single-page form (`frontend/`)
 - **Backend:** Go AWS Lambda (`backend/`)
-- **API:** API Gateway HTTP `POST /trip`
+- **API:** API Gateway HTTP `POST /trip` and `GET /trips`
 - **Storage:** DynamoDB append-only ledger (`id` primary key)
 - **Infrastructure:** Terraform (`infra/`)
 
@@ -71,6 +71,24 @@ This runs:
 ```
 
 Response includes calculated `delta_km` and `trip_cost_chf`.
+
+`GET /trips`
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "timestamp": "2026-03-21T10:00:00Z",
+      "user_name": "Alex",
+      "start_km": 12345,
+      "end_km": 12410,
+      "delta_km": 65,
+      "trip_cost_chf": 32.5,
+      "event_type": "trip_manual"
+    }
+  ]
+}
+```
 
 ## Notes for future features
 - **OCR** would attach a new event (`event_type = trip_ocr`) referencing the original trip ID.
