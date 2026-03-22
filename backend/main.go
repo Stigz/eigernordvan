@@ -224,7 +224,7 @@ func (h *handler) handleUpdateTrip(ctx context.Context, request events.APIGatewa
 		log.Printf("scan failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
 	}
-	if err := validateTripWithHistory(payload, trips, id); err != nil {
+	if err := validateTripUpdate(payload, trips, id); err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
@@ -353,25 +353,32 @@ func validateTripWithHistory(payload tripRequest, trips []tripRecord, currentID 
 		return nil
 	}
 
-	filtered := make([]tripRecord, 0, len(trips))
+	latestEnd := trips[0].EndKM
+	for _, trip := range trips[1:] {
+		if trip.EndKM > latestEnd {
+			latestEnd = trip.EndKM
+		}
+	}
+
+	if payload.StartKM != latestEnd {
+		return fmt.Errorf("start_km must match latest recorded end odometer (%.1f)", latestEnd)
+	}
+
+	return nil
+}
+
+func validateTripUpdate(payload tripRequest, trips []tripRecord, currentID string) error {
+	if currentID == "" {
+		return errors.New("trip id is required")
+	}
+
 	for _, trip := range trips {
 		if trip.ID == currentID {
 			continue
 		}
-		filtered = append(filtered, trip)
-	}
-
-	if len(filtered) == 0 {
-		return nil
-	}
-
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].EndKM > filtered[j].EndKM
-	})
-
-	latestEnd := filtered[0].EndKM
-	if payload.StartKM != latestEnd {
-		return fmt.Errorf("start_km must match latest recorded end odometer (%.1f)", latestEnd)
+		if payload.StartKM < trip.EndKM && payload.EndKM > trip.StartKM {
+			return fmt.Errorf("edited range %.1f-%.1f overlaps existing trip %.1f-%.1f", payload.StartKM, payload.EndKM, trip.StartKM, trip.EndKM)
+		}
 	}
 
 	return nil
