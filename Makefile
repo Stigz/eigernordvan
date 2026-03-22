@@ -23,7 +23,7 @@ frontend-install:
 frontend-build: frontend-install
 	cd frontend && npm run build
 
-frontend-deploy: terraform-init
+frontend-deploy: terraform-init terraform-apply frontend-install
 	cd frontend && VITE_API_URL=$$(cd ../infra && terraform output -raw api_url) npm run build
 	aws s3 sync frontend/dist s3://$$(cd infra && terraform output -raw frontend_bucket_name) --delete
 	aws cloudfront create-invalidation --distribution-id $$(cd infra && terraform output -raw frontend_distribution_id) --paths "/*"
