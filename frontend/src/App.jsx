@@ -91,6 +91,33 @@ const saveFuelEntries = (entries) => {
   localStorage.setItem(fuelStorageKey, JSON.stringify(entries));
 };
 
+const compareByOdometerThenTime = (a, b) => {
+  if (a.odometer_km !== b.odometer_km) {
+    return a.odometer_km - b.odometer_km;
+  }
+  return new Date(a.timestamp) - new Date(b.timestamp);
+};
+
+const buildEfficiencyLinePath = (points, width, height, padding) => {
+  if (points.length === 0) {
+    return "";
+  }
+
+  const minY = Math.min(...points.map((point) => point.efficiency));
+  const maxY = Math.max(...points.map((point) => point.efficiency));
+  const yRange = maxY - minY || 1;
+  const xRange = points.length - 1 || 1;
+
+  return points
+    .map((point, index) => {
+      const x = padding + (index / xRange) * (width - padding * 2);
+      const normalizedY = (point.efficiency - minY) / yRange;
+      const y = height - padding - normalizedY * (height - padding * 2);
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+};
+
 export default function App() {
   const [activeView, setActiveView] = useState("km");
   const [form, setForm] = useState(initialForm);
@@ -102,6 +129,7 @@ export default function App() {
   const [gasForm, setGasForm] = useState(initialGasForm);
   const [gasStatus, setGasStatus] = useState({ state: "idle", message: "" });
   const [gasEntries, setGasEntries] = useState(() => parseFuelEntries());
+  const [gasTableState, setGasTableState] = useState({ state: "loading", message: "Loading fuel entries..." });
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
   const latestEndKm = useMemo(
@@ -121,7 +149,14 @@ export default function App() {
   );
 
   const sortedGasEntries = useMemo(
-    () => [...gasEntries].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)),
+    () =>
+      [...gasEntries].sort((a, b) => {
+        const odometerComparison = b.odometer_km - a.odometer_km;
+        if (odometerComparison !== 0) {
+          return odometerComparison;
+        }
+        return new Date(b.timestamp) - new Date(a.timestamp);
+      }),
     [gasEntries],
   );
 
@@ -154,53 +189,122 @@ export default function App() {
     return map;
   }, [trips]);
 
-  const summaryCards = useMemo(() => {
-    const totalKm = trips.reduce((sum, trip) => sum + trip.delta_km, 0);
-    const totalFuelLiters = gasEntries.reduce((sum, entry) => sum + entry.liters, 0);
-    const totalFuelCost = gasEntries.reduce((sum, entry) => sum + entry.cost_chf, 0);
-    const avgCostPerKm = totalKm > 0 ? totalFuelCost / totalKm : 0;
-    const kmPerLiter = totalFuelLiters > 0 ? totalKm / totalFuelLiters : 0;
+  const fuelEfficiencyIntervals = useMemo(() => {
+    const orderedTrips = [...trips].sort((a, b) => {
+      if (a.start_km !== b.start_km) {
+        return a.start_km - b.start_km;
+      }
+      return new Date(a.timestamp) - new Date(b.timestamp);
+    });
+
+    const orderedFuelEntries = [...gasEntries].sort(compareByOdometerThenTime);
+
+    const getDistanceBetweenOdometers = (startKm, endKm) => {
+      if (!(Number.isFinite(startKm) && Number.isFinite(endKm)) || endKm <= startKm) {
+        return 0;
+      }
+
+      return orderedTrips.reduce((sum, trip) => {
+        const overlapStart = Math.max(startKm, trip.start_km);
+        const overlapEnd = Math.min(endKm, trip.end_km);
+        if (overlapEnd <= overlapStart) {
+          return sum;
+        }
+        return sum + (overlapEnd - overlapStart);
+      }, 0);
+    };
+
+    return orderedFuelEntries
+      .map((entry, index) => {
+        const previous = orderedFuelEntries[index - 1];
+        if (!previous) {
+          return null;
+        }
+
+        const intervalDistanceKm = getDistanceBetweenOdometers(previous.odometer_km, entry.odometer_km);
+        if (!(intervalDistanceKm > 0 && entry.liters > 0)) {
+          return null;
+        }
+
+        const kmPerLiter = intervalDistanceKm / entry.liters;
+        const litersPer100Km = (entry.liters / intervalDistanceKm) * 100;
+        const costPer100Km = (entry.cost_chf / intervalDistanceKm) * 100;
+
+        return {
+          id: entry.id,
+          timestamp: entry.timestamp,
+          user_name: entry.user_name,
+          from_odometer_km: previous.odometer_km,
+          to_odometer_km: entry.odometer_km,
+          interval_distance_km: intervalDistanceKm,
+          liters: entry.liters,
+          cost_chf: entry.cost_chf,
+          km_per_liter: kmPerLiter,
+          liters_per_100km: litersPer100Km,
+          cost_per_100km: costPer100Km,
+        };
+      })
+      .filter(Boolean);
+  }, [trips, gasEntries]);
+
+  const insightSummaryCards = useMemo(() => {
+    const latestInterval = fuelEfficiencyIntervals.at(-1) || null;
+    const days30Ago = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const last30Intervals = fuelEfficiencyIntervals.filter((item) => new Date(item.timestamp).getTime() >= days30Ago);
+
+    const avg = (items, key) => {
+      if (items.length === 0) {
+        return null;
+      }
+      return items.reduce((sum, item) => sum + item[key], 0) / items.length;
+    };
 
     return [
-      { label: "Total KM", value: `${totalKm.toFixed(1)} km` },
-      { label: "Fuel Spend", value: `CHF ${totalFuelCost.toFixed(2)}` },
-      { label: "KM / Liter", value: kmPerLiter > 0 ? kmPerLiter.toFixed(2) : "—" },
-      { label: "CHF / KM", value: totalKm > 0 ? avgCostPerKm.toFixed(3) : "—" },
+      {
+        label: "Latest efficiency",
+        value: latestInterval ? `${latestInterval.km_per_liter.toFixed(2)} km/l` : "—",
+        hint: latestInterval
+          ? `${latestInterval.interval_distance_km.toFixed(1)} km interval`
+          : "Need at least 2 fuel events",
+      },
+      {
+        label: "30-day avg km/l",
+        value: last30Intervals.length ? `${avg(last30Intervals, "km_per_liter")?.toFixed(2)} km/l` : "—",
+        hint: `${last30Intervals.length} intervals included`,
+      },
+      {
+        label: "30-day L/100km",
+        value: last30Intervals.length ? `${avg(last30Intervals, "liters_per_100km")?.toFixed(2)}` : "—",
+        hint: "Lower is better",
+      },
+      {
+        label: "30-day CHF/100km",
+        value: last30Intervals.length ? `CHF ${avg(last30Intervals, "cost_per_100km")?.toFixed(2)}` : "—",
+        hint: "Fuel cost intensity",
+      },
     ];
-  }, [trips, gasEntries]);
+  }, [fuelEfficiencyIntervals]);
 
-  const efficiencySeries = useMemo(() => {
-    const byMonth = new Map();
+  const efficiencyTrend = useMemo(() => {
+    const trendPoints = [...fuelEfficiencyIntervals]
+      .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+      .map((item) => ({
+        id: item.id,
+        timestamp: item.timestamp,
+        efficiency: item.km_per_liter,
+      }));
 
-    trips.forEach((trip) => {
-      const monthKey = new Date(trip.timestamp).toISOString().slice(0, 7);
-      const current = byMonth.get(monthKey) || { km: 0, liters: 0 };
-      current.km += trip.delta_km;
-      byMonth.set(monthKey, current);
-    });
-
-    gasEntries.forEach((entry) => {
-      const monthKey = new Date(entry.timestamp).toISOString().slice(0, 7);
-      const current = byMonth.get(monthKey) || { km: 0, liters: 0 };
-      current.liters += entry.liters;
-      byMonth.set(monthKey, current);
-    });
-
-    const values = [...byMonth.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, value]) => ({
-        month,
-        efficiency: value.liters > 0 ? value.km / value.liters : 0,
-      }))
-      .filter((item) => item.efficiency > 0);
-
-    const maxEfficiency = values.reduce((max, item) => Math.max(max, item.efficiency), 0);
-
-    return values.map((item) => ({
-      ...item,
-      width: maxEfficiency > 0 ? Math.max(8, (item.efficiency / maxEfficiency) * 100) : 0,
-    }));
-  }, [trips, gasEntries]);
+    const svgWidth = 700;
+    const svgHeight = 220;
+    const padding = 24;
+    return {
+      points: trendPoints,
+      linePath: buildEfficiencyLinePath(trendPoints, svgWidth, svgHeight, padding),
+      width: svgWidth,
+      height: svgHeight,
+      padding,
+    };
+  }, [fuelEfficiencyIntervals]);
 
   const loadTrips = async () => {
     if (!apiBaseUrl) {
@@ -256,6 +360,7 @@ export default function App() {
 
   useEffect(() => {
     saveFuelEntries(gasEntries);
+    setGasTableState({ state: "success", message: "" });
   }, [gasEntries]);
 
   const handleChange = (event) => {
@@ -348,6 +453,7 @@ export default function App() {
       return;
     }
 
+    setGasTableState({ state: "loading", message: "Updating fuel history..." });
     setGasEntries((prev) => [entry, ...prev]);
     upsertProfile(entry.user_name);
     setGasStatus({ state: "success", message: "Fuel entry added." });
@@ -394,6 +500,7 @@ export default function App() {
   };
 
   const handleDeleteGas = (entryId) => {
+    setGasTableState({ state: "loading", message: "Updating fuel history..." });
     setGasEntries((prev) => prev.filter((entry) => entry.id !== entryId));
     setGasStatus({ state: "success", message: "Fuel entry deleted." });
   };
@@ -652,52 +759,56 @@ export default function App() {
                 <h2>Gas history</h2>
               </header>
 
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Time (UTC)</th>
-                      <th>User</th>
-                      <th>Liters</th>
-                      <th>CHF</th>
-                      <th>Odometer</th>
-                      <th>CHF/L</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedGasEntries.length === 0 ? (
+              {gasTableState.state === "error" ? (
+                <div className="status error">{gasTableState.message}</div>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
                       <tr>
-                        <td colSpan="7" className="empty-cell">
-                          No fuel entries yet.
-                        </td>
+                        <th>Time (UTC)</th>
+                        <th>User</th>
+                        <th>Liters</th>
+                        <th>CHF</th>
+                        <th>Odometer</th>
+                        <th>CHF/L</th>
+                        <th>Actions</th>
                       </tr>
-                    ) : (
-                      sortedGasEntries.map((entry) => (
-                        <tr key={entry.id}>
-                          <td>{new Date(entry.timestamp).toLocaleString()}</td>
-                          <td>{entry.user_name}</td>
-                          <td>{entry.liters.toFixed(2)}</td>
-                          <td>{entry.cost_chf.toFixed(2)}</td>
-                          <td>{entry.odometer_km.toFixed(1)}</td>
-                          <td>{(entry.cost_chf / entry.liters).toFixed(2)}</td>
-                          <td>
-                            <div className="row-actions">
-                              <button
-                                type="button"
-                                className="table-btn danger"
-                                onClick={() => handleDeleteGas(entry.id)}
-                              >
-                                Delete
-                              </button>
-                            </div>
+                    </thead>
+                    <tbody>
+                      {sortedGasEntries.length === 0 ? (
+                        <tr>
+                          <td colSpan="7" className="empty-cell">
+                            {gasTableState.state === "loading" ? "Loading..." : "No fuel entries yet."}
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                      ) : (
+                        sortedGasEntries.map((entry) => (
+                          <tr key={entry.id}>
+                            <td>{new Date(entry.timestamp).toLocaleString()}</td>
+                            <td>{entry.user_name}</td>
+                            <td>{entry.liters.toFixed(2)}</td>
+                            <td>{entry.cost_chf.toFixed(2)}</td>
+                            <td>{entry.odometer_km.toFixed(1)}</td>
+                            <td>{(entry.cost_chf / entry.liters).toFixed(2)}</td>
+                            <td>
+                              <div className="row-actions">
+                                <button
+                                  type="button"
+                                  className="table-btn danger"
+                                  onClick={() => handleDeleteGas(entry.id)}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
           </div>
         )}
@@ -706,33 +817,90 @@ export default function App() {
           <section className="card insights-panel">
             <header>
               <p className="eyebrow">Insights</p>
-              <h2>Efficiency overview</h2>
-              <p className="subtitle">Monthly km/l trend based on trip distance and gas logs.</p>
+              <h2>Fuel efficiency overview</h2>
+              <p className="subtitle">Efficiency intervals are derived from ordered fuel events and trip ranges.</p>
             </header>
 
-            <div className="summary-grid">
-              {summaryCards.map((card) => (
-                <article key={card.label} className="summary-card">
+            <div className="summary-grid compact-summary-grid">
+              {insightSummaryCards.map((card) => (
+                <article key={card.label} className="summary-card compact-summary-card">
                   <p className="summary-label">{card.label}</p>
                   <p className="summary-value">{card.value}</p>
+                  <p className="summary-hint">{card.hint}</p>
                 </article>
               ))}
             </div>
 
-            <div className="chart-list" role="img" aria-label="Bar chart of monthly efficiency in kilometers per liter">
-              {efficiencySeries.length === 0 ? (
-                <p className="subtitle">Add km and gas records to see the efficiency chart.</p>
+            <div className="line-chart-shell" role="img" aria-label="Line chart showing fuel efficiency trend in km per liter">
+              {efficiencyTrend.points.length < 2 ? (
+                <p className="subtitle">Add at least two valid fuel intervals to see an efficiency trend line.</p>
               ) : (
-                efficiencySeries.map((item) => (
-                  <div key={item.month} className="chart-row">
-                    <span className="chart-month">{item.month}</span>
-                    <div className="chart-track">
-                      <div className="chart-bar" style={{ width: `${item.width}%` }} />
-                    </div>
-                    <span className="chart-value">{item.efficiency.toFixed(2)} km/l</span>
+                <>
+                  <svg viewBox={`0 0 ${efficiencyTrend.width} ${efficiencyTrend.height}`} className="line-chart">
+                    <polyline points={efficiencyTrend.linePath} className="line-chart-path" />
+                    {efficiencyTrend.points.map((point, index) => {
+                      const minY = Math.min(...efficiencyTrend.points.map((item) => item.efficiency));
+                      const maxY = Math.max(...efficiencyTrend.points.map((item) => item.efficiency));
+                      const yRange = maxY - minY || 1;
+                      const xRange = efficiencyTrend.points.length - 1 || 1;
+                      const x =
+                        efficiencyTrend.padding +
+                        (index / xRange) * (efficiencyTrend.width - efficiencyTrend.padding * 2);
+                      const normalizedY = (point.efficiency - minY) / yRange;
+                      const y =
+                        efficiencyTrend.height -
+                        efficiencyTrend.padding -
+                        normalizedY * (efficiencyTrend.height - efficiencyTrend.padding * 2);
+                      return <circle key={point.id} cx={x} cy={y} r="4" className="line-chart-dot" />;
+                    })}
+                  </svg>
+                  <div className="line-chart-legend">
+                    <span>{new Date(efficiencyTrend.points[0].timestamp).toLocaleDateString()}</span>
+                    <span>{new Date(efficiencyTrend.points.at(-1).timestamp).toLocaleDateString()}</span>
                   </div>
-                ))
+                </>
               )}
+            </div>
+
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fuel time (UTC)</th>
+                    <th>User</th>
+                    <th>From km</th>
+                    <th>To km</th>
+                    <th>Δ km</th>
+                    <th>km/l</th>
+                    <th>L/100km</th>
+                    <th>CHF/100km</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fuelEfficiencyIntervals.length === 0 ? (
+                    <tr>
+                      <td colSpan="8" className="empty-cell">
+                        No efficiency intervals yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    [...fuelEfficiencyIntervals]
+                      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+                      .map((item) => (
+                        <tr key={item.id}>
+                          <td>{new Date(item.timestamp).toLocaleString()}</td>
+                          <td>{item.user_name}</td>
+                          <td>{item.from_odometer_km.toFixed(1)}</td>
+                          <td>{item.to_odometer_km.toFixed(1)}</td>
+                          <td>{item.interval_distance_km.toFixed(1)}</td>
+                          <td>{item.km_per_liter.toFixed(2)}</td>
+                          <td>{item.liters_per_100km.toFixed(2)}</td>
+                          <td>{item.cost_per_100km.toFixed(2)}</td>
+                        </tr>
+                      ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </section>
         )}
