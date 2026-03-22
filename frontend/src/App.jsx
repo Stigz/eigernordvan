@@ -299,6 +299,7 @@ export default function App() {
                 value={form.start_km}
                 onChange={handleChange}
                 required
+                readOnly={!editId && latestEndKm !== null}
               />
             </label>
 
