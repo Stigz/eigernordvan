@@ -81,6 +81,16 @@ h2 {
   font-size: 16px;
 }
 
+.field input[readonly] {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+}
+
 .submit {
   border: none;
   border-radius: 999px;
@@ -88,6 +98,17 @@ h2 {
   background: #1d4ed8;
   color: #ffffff;
   font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cancel {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 14px 16px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -155,6 +176,36 @@ th {
 .empty-cell {
   text-align: center;
   color: #64748b;
+}
+
+.conflict-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #b91c1c;
+}
+
+.conflict-ok {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.table-btn {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: white;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.table-btn.danger {
+  border-color: #fecaca;
+  color: #b91c1c;
 }
 
 @media (min-width: 960px) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -80,6 +81,7 @@ func main() {
 
 func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	method := request.RequestContext.HTTP.Method
+	path := request.RawPath
 
 	if method == http.MethodOptions {
 		return h.respond(http.StatusNoContent, nil), nil
@@ -87,12 +89,47 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 
 	switch method {
 	case http.MethodPost:
-		return h.handleCreateTrip(ctx, request)
+		if path == "/trip" {
+			return h.handleCreateTrip(ctx, request)
+		}
 	case http.MethodGet:
-		return h.handleListTrips(ctx)
+		if path == "/trips" {
+			return h.handleListTrips(ctx)
+		}
+	case http.MethodPut:
+		if strings.HasPrefix(path, "/trip/") {
+			return h.handleUpdateTrip(ctx, request, strings.TrimPrefix(path, "/trip/"))
+		}
+	case http.MethodDelete:
+		if strings.HasPrefix(path, "/trip/") {
+			return h.handleDeleteTrip(ctx, strings.TrimPrefix(path, "/trip/"))
+		}
 	default:
 		return h.respondError(http.StatusMethodNotAllowed, "method not allowed"), nil
 	}
+
+	return h.respondError(http.StatusNotFound, "route not found"), nil
+}
+
+func (h *handler) listTrips(ctx context.Context) ([]tripRecord, error) {
+	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+		TableName: &h.tableName,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	trips := make([]tripRecord, 0, len(result.Items))
+	for _, item := range result.Items {
+		trip, parseErr := parseTripRecord(item)
+		if parseErr != nil {
+			log.Printf("skipping malformed item: %v", parseErr)
+			continue
+		}
+		trips = append(trips, trip)
+	}
+
+	return trips, nil
 }
 
 func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -102,6 +139,15 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 	}
 
 	if err := validateTrip(payload); err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	trips, err := h.listTrips(ctx)
+	if err != nil {
+		log.Printf("scan failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
+	}
+	if err := validateTripWithHistory(payload, trips, ""); err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
@@ -123,7 +169,7 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 		"ledger_comment": &types.AttributeValueMemberS{Value: "Append-only MVP entry. Corrections are new events."},
 	}
 
-	_, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &h.tableName,
 		Item:      item,
 	})
@@ -145,31 +191,89 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 }
 
 func (h *handler) handleListTrips(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
-		TableName: &h.tableName,
-	})
+	trips, err := h.listTrips(ctx)
 	if err != nil {
 		log.Printf("scan failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to fetch trips"), nil
 	}
 
-	trips := make([]tripRecord, 0, len(result.Items))
-	for _, item := range result.Items {
-		trip, parseErr := parseTripRecord(item)
-		if parseErr != nil {
-			log.Printf("skipping malformed item: %v", parseErr)
-			continue
-		}
-		trips = append(trips, trip)
-	}
-
 	sort.Slice(trips, func(i, j int) bool {
-		return trips[i].Timestamp > trips[j].Timestamp
+		if trips[i].EndKM == trips[j].EndKM {
+			return trips[i].Timestamp > trips[j].Timestamp
+		}
+		return trips[i].EndKM > trips[j].EndKM
 	})
 
 	return h.respond(http.StatusOK, map[string]any{
 		"items": trips,
 	}), nil
+}
+
+func (h *handler) handleUpdateTrip(ctx context.Context, request events.APIGatewayV2HTTPRequest, id string) (events.APIGatewayV2HTTPResponse, error) {
+	var payload tripRequest
+	if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+		return h.respondError(http.StatusBadRequest, "invalid json payload"), nil
+	}
+
+	if err := validateTrip(payload); err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	trips, err := h.listTrips(ctx)
+	if err != nil {
+		log.Printf("scan failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
+	}
+	if err := validateTripWithHistory(payload, trips, id); err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	now := time.Now().UTC()
+	deltaKM := payload.EndKM - payload.StartKM
+	tripCost := deltaKM * 0.50
+
+	item := map[string]types.AttributeValue{
+		"id":             &types.AttributeValueMemberS{Value: id},
+		"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+		"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
+		"start_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.StartKM)},
+		"end_km":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.EndKM)},
+		"delta_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", deltaKM)},
+		"trip_cost_chf":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", tripCost)},
+		"event_type":     &types.AttributeValueMemberS{Value: "trip_manual_updated"},
+		"ledger_comment": &types.AttributeValueMemberS{Value: "Entry updated to resolve odometer mistakes."},
+	}
+
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &h.tableName,
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("update item failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to update trip"), nil
+	}
+
+	return h.respond(http.StatusOK, map[string]any{
+		"id":            id,
+		"delta_km":      deltaKM,
+		"trip_cost_chf": tripCost,
+		"timestamp":     now.Format(time.RFC3339),
+	}), nil
+}
+
+func (h *handler) handleDeleteTrip(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
+	_, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &h.tableName,
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: id},
+		},
+	})
+	if err != nil {
+		log.Printf("delete item failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to delete trip"), nil
+	}
+
+	return h.respond(http.StatusOK, map[string]string{"status": "deleted"}), nil
 }
 
 func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
@@ -244,6 +348,35 @@ func validateTrip(payload tripRequest) error {
 	return nil
 }
 
+func validateTripWithHistory(payload tripRequest, trips []tripRecord, currentID string) error {
+	if len(trips) == 0 {
+		return nil
+	}
+
+	filtered := make([]tripRecord, 0, len(trips))
+	for _, trip := range trips {
+		if trip.ID == currentID {
+			continue
+		}
+		filtered = append(filtered, trip)
+	}
+
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].EndKM > filtered[j].EndKM
+	})
+
+	latestEnd := filtered[0].EndKM
+	if payload.StartKM != latestEnd {
+		return fmt.Errorf("start_km must match latest recorded end odometer (%.1f)", latestEnd)
+	}
+
+	return nil
+}
+
 func (h *handler) respondError(status int, message string) events.APIGatewayV2HTTPResponse {
 	return h.respond(status, map[string]string{"error": message})
 }
@@ -256,7 +389,7 @@ func (h *handler) respond(status int, payload any) events.APIGatewayV2HTTPRespon
 			"Content-Type":                 "application/json",
 			"Access-Control-Allow-Origin":  h.corsOrigin,
 			"Access-Control-Allow-Headers": "Content-Type",
-			"Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+			"Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
 		},
 		Body: string(body),
 	}
