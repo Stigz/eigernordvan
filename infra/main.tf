@@ -116,7 +116,7 @@ resource "aws_apigatewayv2_api" "trip_api" {
 
   cors_configuration {
     allow_headers = ["content-type"]
-    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     allow_origins = ["*"]
     max_age       = 3600
   }
@@ -138,6 +138,18 @@ resource "aws_apigatewayv2_route" "trip_route" {
 resource "aws_apigatewayv2_route" "trips_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "GET /trips"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "trip_update_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "PUT /trip/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "trip_delete_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "DELETE /trip/{id}"
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 

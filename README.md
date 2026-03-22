@@ -59,6 +59,7 @@ This runs:
 1. `go build` for the Lambda binary
 2. `zip` packaging
 3. `terraform init` and `terraform apply` in `infra/`
+4. frontend build, S3 sync, and CloudFront invalidation
 
 ## API contract
 `POST /trip`
@@ -89,6 +90,8 @@ Response includes calculated `delta_km` and `trip_cost_chf`.
   ]
 }
 ```
+
+`PUT /trip/{id}` and `DELETE /trip/{id}` are also supported for correcting or removing existing entries.
 
 ## Notes for future features
 - **OCR** would attach a new event (`event_type = trip_ocr`) referencing the original trip ID.
