@@ -71,7 +71,8 @@ resource "aws_iam_role_policy" "lambda_policy" {
     Statement = [
       {
         Action = [
-          "dynamodb:PutItem"
+          "dynamodb:PutItem",
+          "dynamodb:Scan"
         ]
         Effect   = "Allow"
         Resource = aws_dynamodb_table.trip_ledger.arn
@@ -112,6 +113,13 @@ resource "aws_lambda_function" "trip_logger" {
 resource "aws_apigatewayv2_api" "trip_api" {
   name          = "${var.project_name}-api"
   protocol_type = "HTTP"
+
+  cors_configuration {
+    allow_headers = ["content-type"]
+    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_origins = ["*"]
+    max_age       = 3600
+  }
 }
 
 resource "aws_apigatewayv2_integration" "trip_integration" {
@@ -124,6 +132,12 @@ resource "aws_apigatewayv2_integration" "trip_integration" {
 resource "aws_apigatewayv2_route" "trip_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "POST /trip"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "trips_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /trips"
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 

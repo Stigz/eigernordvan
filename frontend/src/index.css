@@ -20,9 +20,15 @@ body {
   padding: 24px 16px 48px;
 }
 
+.layout {
+  width: 100%;
+  max-width: 1100px;
+  display: grid;
+  gap: 20px;
+}
+
 .card {
   width: 100%;
-  max-width: 420px;
   background: #ffffff;
   border-radius: 20px;
   padding: 24px;
@@ -43,6 +49,11 @@ body {
 h1 {
   margin: 0 0 8px;
   font-size: 26px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 22px;
 }
 
 .subtitle {
@@ -110,4 +121,45 @@ h1 {
 .footer {
   font-size: 12px;
   color: #64748b;
+}
+
+.table-card {
+  overflow: hidden;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+th {
+  font-size: 12px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.empty-cell {
+  text-align: center;
+  color: #64748b;
+}
+
+@media (min-width: 960px) {
+  .layout {
+    grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+    align-items: start;
+  }
 }
