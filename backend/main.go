@@ -47,6 +47,37 @@ type tripRecord struct {
 	EventType   string  `json:"event_type"`
 }
 
+type fuelRequest struct {
+	UserName    string  `json:"user_name"`
+	OdometerKM  float64 `json:"odometer_km"`
+	Liters      float64 `json:"liters"`
+	FuelCostCHF float64 `json:"fuel_cost_chf"`
+}
+
+type fuelRecord struct {
+	ID          string  `json:"id"`
+	Timestamp   string  `json:"timestamp"`
+	UserName    string  `json:"user_name"`
+	OdometerKM  float64 `json:"odometer_km"`
+	Liters      float64 `json:"liters"`
+	FuelCostCHF float64 `json:"fuel_cost_chf"`
+	EventType   string  `json:"event_type"`
+}
+
+type eventRecord struct {
+	ID          string   `json:"id"`
+	Timestamp   string   `json:"timestamp"`
+	UserName    string   `json:"user_name"`
+	EventType   string   `json:"event_type"`
+	StartKM     *float64 `json:"start_km,omitempty"`
+	EndKM       *float64 `json:"end_km,omitempty"`
+	DeltaKM     *float64 `json:"delta_km,omitempty"`
+	TripCostCHF *float64 `json:"trip_cost_chf,omitempty"`
+	OdometerKM  *float64 `json:"odometer_km,omitempty"`
+	Liters      *float64 `json:"liters,omitempty"`
+	FuelCostCHF *float64 `json:"fuel_cost_chf,omitempty"`
+}
+
 type handler struct {
 	tableName  string
 	corsOrigin string
@@ -92,9 +123,15 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/trip" {
 			return h.handleCreateTrip(ctx, request)
 		}
+		if path == "/fuel" {
+			return h.handleCreateFuel(ctx, request)
+		}
 	case http.MethodGet:
 		if path == "/trips" {
 			return h.handleListTrips(ctx)
+		}
+		if path == "/fuel" {
+			return h.handleListFuel(ctx)
 		}
 	case http.MethodPut:
 		if strings.HasPrefix(path, "/trip/") {
@@ -112,6 +149,42 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 }
 
 func (h *handler) listTrips(ctx context.Context) ([]tripRecord, error) {
+	events, err := h.listEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	trips := make([]tripRecord, 0, len(events))
+	for _, event := range events {
+		trip, ok := event.asTrip()
+		if !ok {
+			continue
+		}
+		trips = append(trips, trip)
+	}
+
+	return trips, nil
+}
+
+func (h *handler) listFuel(ctx context.Context) ([]fuelRecord, error) {
+	events, err := h.listEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	fuel := make([]fuelRecord, 0, len(events))
+	for _, event := range events {
+		record, ok := event.asFuel()
+		if !ok {
+			continue
+		}
+		fuel = append(fuel, record)
+	}
+
+	return fuel, nil
+}
+
+func (h *handler) listEvents(ctx context.Context) ([]eventRecord, error) {
 	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
 		TableName: &h.tableName,
 	})
@@ -119,17 +192,17 @@ func (h *handler) listTrips(ctx context.Context) ([]tripRecord, error) {
 		return nil, err
 	}
 
-	trips := make([]tripRecord, 0, len(result.Items))
+	records := make([]eventRecord, 0, len(result.Items))
 	for _, item := range result.Items {
-		trip, parseErr := parseTripRecord(item)
+		record, parseErr := parseEventRecord(item)
 		if parseErr != nil {
 			log.Printf("skipping malformed item: %v", parseErr)
 			continue
 		}
-		trips = append(trips, trip)
+		records = append(records, record)
 	}
 
-	return trips, nil
+	return records, nil
 }
 
 func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -190,6 +263,47 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 	return h.respond(http.StatusOK, response), nil
 }
 
+func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	var payload fuelRequest
+	if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+		return h.respondError(http.StatusBadRequest, "invalid json payload"), nil
+	}
+
+	if err := validateFuel(payload); err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	now := time.Now().UTC()
+	itemID := uuid.NewString()
+	item := map[string]types.AttributeValue{
+		"id":             &types.AttributeValueMemberS{Value: itemID},
+		"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+		"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
+		"odometer_km":    &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.OdometerKM)},
+		"liters":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.Liters)},
+		"fuel_cost_chf":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.FuelCostCHF)},
+		"event_type":     &types.AttributeValueMemberS{Value: "fuel_manual"},
+		"ledger_comment": &types.AttributeValueMemberS{Value: "Append-only MVP entry. Corrections are new events."},
+	}
+
+	_, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &h.tableName,
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("put fuel item failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to store fuel event"), nil
+	}
+
+	return h.respond(http.StatusOK, map[string]any{
+		"id":            itemID,
+		"timestamp":     now.Format(time.RFC3339),
+		"event_type":    "fuel_manual",
+		"fuel_cost_chf": payload.FuelCostCHF,
+		"confirmation":  "Fuel event logged.",
+	}), nil
+}
+
 func (h *handler) handleListTrips(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
 	trips, err := h.listTrips(ctx)
 	if err != nil {
@@ -206,6 +320,25 @@ func (h *handler) handleListTrips(ctx context.Context) (events.APIGatewayV2HTTPR
 
 	return h.respond(http.StatusOK, map[string]any{
 		"items": trips,
+	}), nil
+}
+
+func (h *handler) handleListFuel(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
+	records, err := h.listFuel(ctx)
+	if err != nil {
+		log.Printf("scan failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch fuel events"), nil
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].OdometerKM == records[j].OdometerKM {
+			return records[i].Timestamp > records[j].Timestamp
+		}
+		return records[i].OdometerKM > records[j].OdometerKM
+	})
+
+	return h.respond(http.StatusOK, map[string]any{
+		"items": records,
 	}), nil
 }
 
@@ -277,7 +410,19 @@ func (h *handler) handleDeleteTrip(ctx context.Context, id string) (events.APIGa
 }
 
 func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
-	getString := func(key string) (string, error) {
+	record, err := parseEventRecord(item)
+	if err != nil {
+		return tripRecord{}, err
+	}
+	trip, ok := record.asTrip()
+	if !ok {
+		return tripRecord{}, errors.New("record is not a trip event")
+	}
+	return trip, nil
+}
+
+func parseEventRecord(item map[string]types.AttributeValue) (eventRecord, error) {
+	getStringRequired := func(key string) (string, error) {
 		value, ok := item[key].(*types.AttributeValueMemberS)
 		if !ok {
 			return "", fmt.Errorf("%s missing or not string", key)
@@ -285,48 +430,69 @@ func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
 		return value.Value, nil
 	}
 
-	getNumber := func(key string) (float64, error) {
-		value, ok := item[key].(*types.AttributeValueMemberN)
+	getNumberOptional := func(key string) (*float64, error) {
+		value, ok := item[key]
 		if !ok {
-			return 0, fmt.Errorf("%s missing or not number", key)
+			return nil, nil
 		}
-		return strconv.ParseFloat(value.Value, 64)
+		number, ok := value.(*types.AttributeValueMemberN)
+		if !ok {
+			return nil, fmt.Errorf("%s present but not number", key)
+		}
+		parsed, err := strconv.ParseFloat(number.Value, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", key, err)
+		}
+		return &parsed, nil
 	}
 
-	id, err := getString("id")
+	id, err := getStringRequired("id")
 	if err != nil {
-		return tripRecord{}, err
+		return eventRecord{}, err
 	}
-	timestamp, err := getString("timestamp")
+	timestamp, err := getStringRequired("timestamp")
 	if err != nil {
-		return tripRecord{}, err
+		return eventRecord{}, err
 	}
-	userName, err := getString("user_name")
+	userName, err := getStringRequired("user_name")
 	if err != nil {
-		return tripRecord{}, err
+		return eventRecord{}, err
 	}
-	startKM, err := getNumber("start_km")
+	eventType, err := getStringRequired("event_type")
 	if err != nil {
-		return tripRecord{}, err
-	}
-	endKM, err := getNumber("end_km")
-	if err != nil {
-		return tripRecord{}, err
-	}
-	deltaKM, err := getNumber("delta_km")
-	if err != nil {
-		return tripRecord{}, err
-	}
-	tripCost, err := getNumber("trip_cost_chf")
-	if err != nil {
-		return tripRecord{}, err
-	}
-	eventType, err := getString("event_type")
-	if err != nil {
-		return tripRecord{}, err
+		return eventRecord{}, err
 	}
 
-	return tripRecord{
+	startKM, err := getNumberOptional("start_km")
+	if err != nil {
+		return eventRecord{}, err
+	}
+	endKM, err := getNumberOptional("end_km")
+	if err != nil {
+		return eventRecord{}, err
+	}
+	deltaKM, err := getNumberOptional("delta_km")
+	if err != nil {
+		return eventRecord{}, err
+	}
+	tripCost, err := getNumberOptional("trip_cost_chf")
+	if err != nil {
+		return eventRecord{}, err
+	}
+	odometerKM, err := getNumberOptional("odometer_km")
+	if err != nil {
+		return eventRecord{}, err
+	}
+	liters, err := getNumberOptional("liters")
+	if err != nil {
+		return eventRecord{}, err
+	}
+	fuelCost, err := getNumberOptional("fuel_cost_chf")
+	if err != nil {
+		return eventRecord{}, err
+	}
+
+	return eventRecord{
 		ID:          id,
 		Timestamp:   timestamp,
 		UserName:    userName,
@@ -334,8 +500,44 @@ func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
 		EndKM:       endKM,
 		DeltaKM:     deltaKM,
 		TripCostCHF: tripCost,
+		OdometerKM:  odometerKM,
+		Liters:      liters,
+		FuelCostCHF: fuelCost,
 		EventType:   eventType,
 	}, nil
+}
+
+func (r eventRecord) asTrip() (tripRecord, bool) {
+	if r.StartKM == nil || r.EndKM == nil || r.DeltaKM == nil || r.TripCostCHF == nil {
+		return tripRecord{}, false
+	}
+
+	return tripRecord{
+		ID:          r.ID,
+		Timestamp:   r.Timestamp,
+		UserName:    r.UserName,
+		StartKM:     *r.StartKM,
+		EndKM:       *r.EndKM,
+		DeltaKM:     *r.DeltaKM,
+		TripCostCHF: *r.TripCostCHF,
+		EventType:   r.EventType,
+	}, true
+}
+
+func (r eventRecord) asFuel() (fuelRecord, bool) {
+	if r.OdometerKM == nil || r.Liters == nil || r.FuelCostCHF == nil {
+		return fuelRecord{}, false
+	}
+
+	return fuelRecord{
+		ID:          r.ID,
+		Timestamp:   r.Timestamp,
+		UserName:    r.UserName,
+		OdometerKM:  *r.OdometerKM,
+		Liters:      *r.Liters,
+		FuelCostCHF: *r.FuelCostCHF,
+		EventType:   r.EventType,
+	}, true
 }
 
 func validateTrip(payload tripRequest) error {
@@ -344,6 +546,22 @@ func validateTrip(payload tripRequest) error {
 	}
 	if payload.EndKM <= payload.StartKM {
 		return errors.New("end_km must be greater than start_km")
+	}
+	return nil
+}
+
+func validateFuel(payload fuelRequest) error {
+	if payload.UserName == "" {
+		return errors.New("user_name is required")
+	}
+	if payload.OdometerKM <= 0 {
+		return errors.New("odometer_km must be greater than 0")
+	}
+	if payload.Liters <= 0 {
+		return errors.New("liters must be greater than 0")
+	}
+	if payload.FuelCostCHF <= 0 {
+		return errors.New("fuel_cost_chf must be greater than 0")
 	}
 	return nil
 }
