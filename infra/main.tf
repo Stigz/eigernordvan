@@ -45,6 +45,38 @@ resource "aws_dynamodb_table" "trip_ledger" {
   }
 }
 
+resource "aws_dynamodb_table" "bookings" {
+  name         = var.bookings_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  attribute {
+    name = "month_key"
+    type = "S"
+  }
+
+  attribute {
+    name = "start_date"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "month-key-start-date-index"
+    hash_key        = "month_key"
+    range_key       = "start_date"
+    projection_type = "ALL"
+  }
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
 resource "aws_iam_role" "lambda_role" {
   name = "${var.project_name}-lambda-role"
 
@@ -73,10 +105,16 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Action = [
           "dynamodb:PutItem",
           "dynamodb:DeleteItem",
-          "dynamodb:Scan"
+          "dynamodb:Scan",
+          "dynamodb:GetItem",
+          "dynamodb:Query"
         ]
         Effect   = "Allow"
-        Resource = aws_dynamodb_table.trip_ledger.arn
+        Resource = [
+          aws_dynamodb_table.trip_ledger.arn,
+          aws_dynamodb_table.bookings.arn,
+          "${aws_dynamodb_table.bookings.arn}/index/*"
+        ]
       },
       {
         Action = [
@@ -102,7 +140,8 @@ resource "aws_lambda_function" "trip_logger" {
 
   environment {
     variables = {
-      TABLE_NAME = aws_dynamodb_table.trip_ledger.name
+      TABLE_NAME         = aws_dynamodb_table.trip_ledger.name
+      BOOKING_TABLE_NAME = aws_dynamodb_table.bookings.name
     }
   }
 
@@ -151,6 +190,36 @@ resource "aws_apigatewayv2_route" "trip_update_route" {
 resource "aws_apigatewayv2_route" "trip_delete_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "DELETE /trip/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "bookings_create_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "POST /bookings"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "bookings_list_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /bookings"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "bookings_get_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /bookings/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "bookings_update_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "PUT /bookings/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "bookings_delete_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "DELETE /bookings/{id}"
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 

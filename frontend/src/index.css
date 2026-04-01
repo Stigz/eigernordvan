@@ -82,12 +82,14 @@ h2 {
   font-size: 14px;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   padding: 12px 14px;
   border-radius: 12px;
   border: 1px solid #cbd5f5;
   font-size: 16px;
+  background: #fff;
 }
 
 .field input[readonly] {
@@ -382,4 +384,87 @@ th {
   justify-content: space-between;
   font-size: 12px;
   color: #475569;
+}
+
+.calendar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.calendar-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.booking-legend {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.legend-pill {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.legend-pill.open {
+  background: #22c55e;
+  color: #14532d;
+}
+
+.legend-pill.booked {
+  background: #ef4444;
+  color: #7f1d1d;
+}
+
+.legend-pill.blocked {
+  background: #facc15;
+  color: #713f12;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.weekday-cell {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  padding: 6px 0;
+  text-align: center;
+}
+
+.day-cell {
+  border-radius: 10px;
+  min-height: 56px;
+  padding: 8px;
+  font-weight: 600;
+  display: flex;
+  align-items: flex-start;
+}
+
+.day-cell.open {
+  background: #22c55e;
+  color: #14532d;
+}
+
+.day-cell.booked {
+  background: #ef4444;
+  color: #7f1d1d;
+}
+
+.day-cell.blocked {
+  background: #facc15;
+  color: #713f12;
+}
+
+.day-cell.outside {
+  opacity: 0.35;
 }
