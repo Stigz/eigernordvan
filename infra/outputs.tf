@@ -17,3 +17,8 @@ output "frontend_distribution_id" {
   description = "CloudFront distribution ID for the frontend."
   value       = aws_cloudfront_distribution.frontend.id
 }
+
+output "bookings_table_name" {
+  description = "Name of the DynamoDB table storing calendar bookings."
+  value       = aws_dynamodb_table.bookings.name
+}

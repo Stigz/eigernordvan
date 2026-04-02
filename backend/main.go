@@ -78,10 +78,40 @@ type eventRecord struct {
 	FuelCostCHF *float64 `json:"fuel_cost_chf,omitempty"`
 }
 
+type bookingRequest struct {
+	StartDate   string   `json:"start_date"`
+	EndDate     string   `json:"end_date"`
+	Status      string   `json:"status"`
+	GuestName   *string  `json:"guest_name,omitempty"`
+	Notes       *string  `json:"notes,omitempty"`
+	DayKM       *float64 `json:"day_km,omitempty"`
+	NightlyRate *float64 `json:"nightly_rate,omitempty"`
+	CleaningFee *float64 `json:"cleaning_fee,omitempty"`
+	KMRate      *float64 `json:"km_rate,omitempty"`
+}
+
+type bookingRecord struct {
+	ID            string  `json:"id"`
+	StartDate     string  `json:"start_date"`
+	EndDate       string  `json:"end_date"`
+	Status        string  `json:"status"`
+	GuestName     string  `json:"guest_name,omitempty"`
+	Notes         string  `json:"notes,omitempty"`
+	DayKM         float64 `json:"day_km"`
+	NightlyRate   float64 `json:"nightly_rate"`
+	CleaningFee   float64 `json:"cleaning_fee"`
+	KMRate        float64 `json:"km_rate"`
+	EstimateTotal float64 `json:"estimate_total"`
+	Nights        int     `json:"nights"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
+}
+
 type handler struct {
-	tableName  string
-	corsOrigin string
-	db         *dynamodb.Client
+	tableName        string
+	bookingTableName string
+	corsOrigin       string
+	db               *dynamodb.Client
 }
 
 func main() {
@@ -95,6 +125,10 @@ func main() {
 	if tableName == "" {
 		panic("TABLE_NAME is required")
 	}
+	bookingTableName := os.Getenv("BOOKING_TABLE_NAME")
+	if bookingTableName == "" {
+		panic("BOOKING_TABLE_NAME is required")
+	}
 
 	corsOrigin := os.Getenv("CORS_ALLOW_ORIGIN")
 	if corsOrigin == "" {
@@ -102,9 +136,10 @@ func main() {
 	}
 
 	h := &handler{
-		tableName:  tableName,
-		corsOrigin: corsOrigin,
-		db:         dynamodb.NewFromConfig(cfg),
+		tableName:        tableName,
+		bookingTableName: bookingTableName,
+		corsOrigin:       corsOrigin,
+		db:               dynamodb.NewFromConfig(cfg),
 	}
 
 	lambda.Start(h.handle)
@@ -126,6 +161,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/fuel" {
 			return h.handleCreateFuel(ctx, request)
 		}
+		if path == "/bookings" {
+			return h.handleCreateBooking(ctx, request)
+		}
 	case http.MethodGet:
 		if path == "/trips" {
 			return h.handleListTrips(ctx)
@@ -133,13 +171,25 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/fuel" {
 			return h.handleListFuel(ctx)
 		}
+		if path == "/bookings" {
+			return h.handleListBookings(ctx, request)
+		}
+		if strings.HasPrefix(path, "/bookings/") {
+			return h.handleGetBooking(ctx, strings.TrimPrefix(path, "/bookings/"))
+		}
 	case http.MethodPut:
 		if strings.HasPrefix(path, "/trip/") {
 			return h.handleUpdateTrip(ctx, request, strings.TrimPrefix(path, "/trip/"))
 		}
+		if strings.HasPrefix(path, "/bookings/") {
+			return h.handleUpdateBooking(ctx, request, strings.TrimPrefix(path, "/bookings/"))
+		}
 	case http.MethodDelete:
 		if strings.HasPrefix(path, "/trip/") {
 			return h.handleDeleteTrip(ctx, strings.TrimPrefix(path, "/trip/"))
+		}
+		if strings.HasPrefix(path, "/bookings/") {
+			return h.handleDeleteBooking(ctx, strings.TrimPrefix(path, "/bookings/"))
 		}
 	default:
 		return h.respondError(http.StatusMethodNotAllowed, "method not allowed"), nil
@@ -409,6 +459,182 @@ func (h *handler) handleDeleteTrip(ctx context.Context, id string) (events.APIGa
 	return h.respond(http.StatusOK, map[string]string{"status": "deleted"}), nil
 }
 
+func (h *handler) listBookings(ctx context.Context) ([]bookingRecord, error) {
+	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+		TableName: &h.bookingTableName,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	bookings := make([]bookingRecord, 0, len(result.Items))
+	for _, item := range result.Items {
+		booking, parseErr := parseBookingRecord(item)
+		if parseErr != nil {
+			log.Printf("skipping malformed booking item: %v", parseErr)
+			continue
+		}
+		bookings = append(bookings, booking)
+	}
+	return bookings, nil
+}
+
+func (h *handler) handleCreateBooking(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	var payload bookingRequest
+	if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+		return h.respondError(http.StatusBadRequest, "invalid json payload"), nil
+	}
+
+	normalized, err := normalizeAndValidateBooking(payload)
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	bookings, err := h.listBookings(ctx)
+	if err != nil {
+		log.Printf("scan bookings failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate booking overlap"), nil
+	}
+	if err := validateBookingOverlap(normalized, bookings, ""); err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	id := uuid.NewString()
+
+	item := bookingItemFromRecord(id, normalized, now, "")
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &h.bookingTableName,
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("put booking item failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to store booking"), nil
+	}
+
+	created := normalized
+	created.ID = id
+	created.CreatedAt = now
+	created.UpdatedAt = now
+	return h.respond(http.StatusOK, created), nil
+}
+
+func (h *handler) handleListBookings(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	bookings, err := h.listBookings(ctx)
+	if err != nil {
+		log.Printf("scan bookings failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch bookings"), nil
+	}
+
+	fromDate, err := parseOptionalDate(request.QueryStringParameters["from"])
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, "invalid from date; expected YYYY-MM-DD"), nil
+	}
+	toDate, err := parseOptionalDate(request.QueryStringParameters["to"])
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, "invalid to date; expected YYYY-MM-DD"), nil
+	}
+	if fromDate != nil && toDate != nil && !fromDate.Before(*toDate) {
+		return h.respondError(http.StatusBadRequest, "from must be before to"), nil
+	}
+
+	filtered := make([]bookingRecord, 0, len(bookings))
+	for _, booking := range bookings {
+		if bookingOverlapsRange(booking, fromDate, toDate) {
+			filtered = append(filtered, booking)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].StartDate == filtered[j].StartDate {
+			return filtered[i].ID < filtered[j].ID
+		}
+		return filtered[i].StartDate < filtered[j].StartDate
+	})
+
+	return h.respond(http.StatusOK, map[string]any{"items": filtered}), nil
+}
+
+func (h *handler) handleGetBooking(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
+	booking, err := h.getBookingByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, errBookingNotFound) {
+			return h.respondError(http.StatusNotFound, "booking not found"), nil
+		}
+		log.Printf("get booking failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch booking"), nil
+	}
+	return h.respond(http.StatusOK, booking), nil
+}
+
+func (h *handler) handleUpdateBooking(ctx context.Context, request events.APIGatewayV2HTTPRequest, id string) (events.APIGatewayV2HTTPResponse, error) {
+	if strings.TrimSpace(id) == "" {
+		return h.respondError(http.StatusBadRequest, "booking id is required"), nil
+	}
+
+	existing, err := h.getBookingByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, errBookingNotFound) {
+			return h.respondError(http.StatusNotFound, "booking not found"), nil
+		}
+		log.Printf("get booking failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to update booking"), nil
+	}
+
+	var payload bookingRequest
+	if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+		return h.respondError(http.StatusBadRequest, "invalid json payload"), nil
+	}
+
+	normalized, err := normalizeAndValidateBooking(payload)
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	bookings, err := h.listBookings(ctx)
+	if err != nil {
+		log.Printf("scan bookings failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate booking overlap"), nil
+	}
+	if err := validateBookingOverlap(normalized, bookings, id); err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	updatedAt := time.Now().UTC().Format(time.RFC3339)
+	normalized.ID = id
+	normalized.CreatedAt = existing.CreatedAt
+	normalized.UpdatedAt = updatedAt
+
+	item := bookingItemFromRecord(id, normalized, updatedAt, existing.CreatedAt)
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &h.bookingTableName,
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("update booking failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to update booking"), nil
+	}
+
+	return h.respond(http.StatusOK, normalized), nil
+}
+
+func (h *handler) handleDeleteBooking(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
+	if strings.TrimSpace(id) == "" {
+		return h.respondError(http.StatusBadRequest, "booking id is required"), nil
+	}
+	_, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &h.bookingTableName,
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: id},
+		},
+	})
+	if err != nil {
+		log.Printf("delete booking failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to delete booking"), nil
+	}
+	return h.respond(http.StatusOK, map[string]string{"status": "deleted"}), nil
+}
+
 func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
 	record, err := parseEventRecord(item)
 	if err != nil {
@@ -505,6 +731,280 @@ func parseEventRecord(item map[string]types.AttributeValue) (eventRecord, error)
 		FuelCostCHF: fuelCost,
 		EventType:   eventType,
 	}, nil
+}
+
+var errBookingNotFound = errors.New("booking not found")
+
+func parseBookingRecord(item map[string]types.AttributeValue) (bookingRecord, error) {
+	getStringRequired := func(key string) (string, error) {
+		value, ok := item[key].(*types.AttributeValueMemberS)
+		if !ok {
+			return "", fmt.Errorf("%s missing or not string", key)
+		}
+		return value.Value, nil
+	}
+	getStringOptional := func(key string) string {
+		value, ok := item[key].(*types.AttributeValueMemberS)
+		if !ok {
+			return ""
+		}
+		return value.Value
+	}
+	getNumberRequired := func(key string) (float64, error) {
+		value, ok := item[key].(*types.AttributeValueMemberN)
+		if !ok {
+			return 0, fmt.Errorf("%s missing or not number", key)
+		}
+		parsed, err := strconv.ParseFloat(value.Value, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse %s: %w", key, err)
+		}
+		return parsed, nil
+	}
+
+	id, err := getStringRequired("id")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	startDate, err := getStringRequired("start_date")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	endDate, err := getStringRequired("end_date")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	status, err := getStringRequired("status")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	createdAt, err := getStringRequired("created_at")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	updatedAt, err := getStringRequired("updated_at")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	dayKM, err := getNumberRequired("day_km")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	nightlyRate, err := getNumberRequired("nightly_rate")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	cleaningFee, err := getNumberRequired("cleaning_fee")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	kmRate, err := getNumberRequired("km_rate")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	estimateTotal, err := getNumberRequired("estimate_total")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	nightsRaw, err := getNumberRequired("nights")
+	if err != nil {
+		return bookingRecord{}, err
+	}
+
+	return bookingRecord{
+		ID:            id,
+		StartDate:     startDate,
+		EndDate:       endDate,
+		Status:        status,
+		GuestName:     getStringOptional("guest_name"),
+		Notes:         getStringOptional("notes"),
+		DayKM:         dayKM,
+		NightlyRate:   nightlyRate,
+		CleaningFee:   cleaningFee,
+		KMRate:        kmRate,
+		EstimateTotal: estimateTotal,
+		Nights:        int(nightsRaw),
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
+	}, nil
+}
+
+func (h *handler) getBookingByID(ctx context.Context, id string) (bookingRecord, error) {
+	result, err := h.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &h.bookingTableName,
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: id},
+		},
+	})
+	if err != nil {
+		return bookingRecord{}, err
+	}
+	if len(result.Item) == 0 {
+		return bookingRecord{}, errBookingNotFound
+	}
+	return parseBookingRecord(result.Item)
+}
+
+func normalizeAndValidateBooking(payload bookingRequest) (bookingRecord, error) {
+	startDate, err := parseDate(payload.StartDate)
+	if err != nil {
+		return bookingRecord{}, errors.New("start_date must be in YYYY-MM-DD format")
+	}
+	endDate, err := parseDate(payload.EndDate)
+	if err != nil {
+		return bookingRecord{}, errors.New("end_date must be in YYYY-MM-DD format")
+	}
+	if !startDate.Before(endDate) {
+		return bookingRecord{}, errors.New("end_date must be greater than start_date")
+	}
+
+	status := strings.TrimSpace(payload.Status)
+	if status == "" {
+		status = "booked"
+	}
+	if status != "booked" && status != "blocked" && status != "open_override" {
+		return bookingRecord{}, errors.New("status must be booked, blocked, or open_override")
+	}
+
+	dayKM := valueOrDefault(payload.DayKM, 0)
+	nightlyRate := valueOrDefault(payload.NightlyRate, 100)
+	cleaningFee := valueOrDefault(payload.CleaningFee, 100)
+	kmRate := valueOrDefault(payload.KMRate, 0.50)
+
+	if dayKM < 0 || nightlyRate < 0 || cleaningFee < 0 || kmRate < 0 {
+		return bookingRecord{}, errors.New("day_km, nightly_rate, cleaning_fee, and km_rate must be non-negative")
+	}
+
+	nights := int(endDate.Sub(startDate).Hours() / 24)
+	estimate := calculateBookingEstimate(nights, nightlyRate, cleaningFee, dayKM, kmRate)
+
+	return bookingRecord{
+		StartDate:     startDate.Format("2006-01-02"),
+		EndDate:       endDate.Format("2006-01-02"),
+		Status:        status,
+		GuestName:     safeString(payload.GuestName),
+		Notes:         safeString(payload.Notes),
+		DayKM:         dayKM,
+		NightlyRate:   nightlyRate,
+		CleaningFee:   cleaningFee,
+		KMRate:        kmRate,
+		EstimateTotal: estimate,
+		Nights:        nights,
+	}, nil
+}
+
+func calculateBookingEstimate(nights int, nightlyRate, cleaningFee, dayKM, kmRate float64) float64 {
+	total := (float64(nights) * nightlyRate) + cleaningFee + (dayKM * kmRate)
+	return roundMoney(total)
+}
+
+func validateBookingOverlap(candidate bookingRecord, bookings []bookingRecord, currentID string) error {
+	if candidate.Status != "booked" {
+		return nil
+	}
+	for _, booking := range bookings {
+		if booking.ID == currentID || booking.Status != "booked" {
+			continue
+		}
+		if rangesOverlap(candidate.StartDate, candidate.EndDate, booking.StartDate, booking.EndDate) {
+			return fmt.Errorf("booking overlaps existing booking %s (%s to %s)", booking.ID, booking.StartDate, booking.EndDate)
+		}
+	}
+	return nil
+}
+
+func rangesOverlap(startA, endA, startB, endB string) bool {
+	return startA < endB && startB < endA
+}
+
+func bookingOverlapsRange(booking bookingRecord, fromDate, toDate *time.Time) bool {
+	if fromDate == nil && toDate == nil {
+		return true
+	}
+
+	start, err := parseDate(booking.StartDate)
+	if err != nil {
+		return false
+	}
+	end, err := parseDate(booking.EndDate)
+	if err != nil {
+		return false
+	}
+
+	rangeStart := time.Time{}
+	rangeEnd := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	if fromDate != nil {
+		rangeStart = *fromDate
+	}
+	if toDate != nil {
+		rangeEnd = *toDate
+	}
+
+	return start.Before(rangeEnd) && rangeStart.Before(end)
+}
+
+func parseOptionalDate(value string) (*time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := parseDate(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func parseDate(value string) (time.Time, error) {
+	return time.Parse("2006-01-02", strings.TrimSpace(value))
+}
+
+func bookingItemFromRecord(id string, booking bookingRecord, updatedAt, existingCreatedAt string) map[string]types.AttributeValue {
+	createdAt := existingCreatedAt
+	if createdAt == "" {
+		createdAt = updatedAt
+	}
+
+	item := map[string]types.AttributeValue{
+		"id":             &types.AttributeValueMemberS{Value: id},
+		"start_date":     &types.AttributeValueMemberS{Value: booking.StartDate},
+		"end_date":       &types.AttributeValueMemberS{Value: booking.EndDate},
+		"status":         &types.AttributeValueMemberS{Value: booking.Status},
+		"day_km":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.DayKM)},
+		"nightly_rate":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.NightlyRate)},
+		"cleaning_fee":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.CleaningFee)},
+		"km_rate":        &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.KMRate)},
+		"estimate_total": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.EstimateTotal)},
+		"nights":         &types.AttributeValueMemberN{Value: strconv.Itoa(booking.Nights)},
+		"month_key":      &types.AttributeValueMemberS{Value: booking.StartDate[:7]},
+		"created_at":     &types.AttributeValueMemberS{Value: createdAt},
+		"updated_at":     &types.AttributeValueMemberS{Value: updatedAt},
+	}
+	if strings.TrimSpace(booking.GuestName) != "" {
+		item["guest_name"] = &types.AttributeValueMemberS{Value: strings.TrimSpace(booking.GuestName)}
+	}
+	if strings.TrimSpace(booking.Notes) != "" {
+		item["notes"] = &types.AttributeValueMemberS{Value: strings.TrimSpace(booking.Notes)}
+	}
+	return item
+}
+
+func valueOrDefault(value *float64, fallback float64) float64 {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func safeString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func roundMoney(value float64) float64 {
+	return float64(int(value*100+0.5)) / 100
 }
 
 func (r eventRecord) asTrip() (tripRecord, bool) {

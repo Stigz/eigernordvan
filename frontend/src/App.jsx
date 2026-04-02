@@ -28,6 +28,52 @@ const initialGasForm = {
   odometer_km: "",
 };
 
+const initialBookingForm = {
+  start_date: "",
+  end_date: "",
+  status: "booked",
+  guest_name: "",
+  day_km: "",
+  notes: "",
+};
+
+const bookingStatusPriority = {
+  open: 0,
+  blocked: 1,
+  booked: 2,
+};
+
+const formatDateISO = (date) => date.toISOString().slice(0, 10);
+
+const parseIsoDate = (value) => new Date(`${value}T00:00:00`);
+
+const monthLabel = (date) =>
+  date.toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+
+const toMonthStart = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
+
+const addDays = (date, days) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const calculateBookingPreview = (startDate, endDate, dayKm) => {
+  if (!startDate || !endDate) {
+    return { nights: 0, total: 0 };
+  }
+  const nights = Math.max(0, Math.round((parseIsoDate(endDate) - parseIsoDate(startDate)) / (1000 * 60 * 60 * 24)));
+  const dayKmNumber = Number(dayKm);
+  const sanitizedDayKm = Number.isFinite(dayKmNumber) && dayKmNumber > 0 ? dayKmNumber : 0;
+  const total = nights * 100 + 100 + sanitizedDayKm * 0.5;
+  return { nights, total };
+};
+
+const bookingOverlapsDay = (booking, dayIso) => booking.start_date <= dayIso && dayIso < booking.end_date;
+
 const profileStorageKey = "van_trip_profiles_v1";
 
 const parseProfiles = () => {
@@ -130,6 +176,11 @@ export default function App() {
   const [gasStatus, setGasStatus] = useState({ state: "idle", message: "" });
   const [gasEntries, setGasEntries] = useState(() => parseFuelEntries());
   const [gasTableState, setGasTableState] = useState({ state: "loading", message: "Loading fuel entries..." });
+  const [bookingForm, setBookingForm] = useState(initialBookingForm);
+  const [bookingStatus, setBookingStatus] = useState({ state: "idle", message: "" });
+  const [bookings, setBookings] = useState([]);
+  const [bookingTableState, setBookingTableState] = useState({ state: "loading", message: "Loading bookings..." });
+  const [bookingMonth, setBookingMonth] = useState(() => toMonthStart(new Date()));
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
   const latestEndKm = useMemo(
@@ -306,6 +357,54 @@ export default function App() {
     };
   }, [fuelEfficiencyIntervals]);
 
+  const visibleBookingMonth = useMemo(() => toMonthStart(bookingMonth), [bookingMonth]);
+
+  const bookingDateRange = useMemo(() => {
+    const monthStart = visibleBookingMonth;
+    const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
+    return {
+      from: formatDateISO(monthStart),
+      to: formatDateISO(monthEnd),
+    };
+  }, [visibleBookingMonth]);
+
+  const bookingPreview = useMemo(
+    () => calculateBookingPreview(bookingForm.start_date, bookingForm.end_date, bookingForm.day_km),
+    [bookingForm.start_date, bookingForm.end_date, bookingForm.day_km],
+  );
+
+  const calendarCells = useMemo(() => {
+    const start = visibleBookingMonth;
+    const monthStart = new Date(start.getFullYear(), start.getMonth(), 1);
+    const calendarStart = addDays(monthStart, -monthStart.getDay());
+    return Array.from({ length: 42 }, (_, index) => {
+      const date = addDays(calendarStart, index);
+      const iso = formatDateISO(date);
+
+      const status = bookings.reduce(
+        (selectedStatus, booking) => {
+          if (!bookingOverlapsDay(booking, iso)) {
+            return selectedStatus;
+          }
+          const resolvedStatus = booking.status === "open_override" ? "open" : booking.status;
+          if (bookingStatusPriority[resolvedStatus] > bookingStatusPriority[selectedStatus]) {
+            return resolvedStatus;
+          }
+          return selectedStatus;
+        },
+        "open",
+      );
+
+      return {
+        iso,
+        date,
+        day: date.getDate(),
+        isCurrentMonth: date.getMonth() === monthStart.getMonth(),
+        status,
+      };
+    });
+  }, [visibleBookingMonth, bookings]);
+
   const loadTrips = async () => {
     if (!apiBaseUrl) {
       setTableState({
@@ -333,9 +432,41 @@ export default function App() {
     }
   };
 
+  const loadBookings = async (from, to) => {
+    if (!apiBaseUrl) {
+      setBookingTableState({
+        state: "error",
+        message: "Missing VITE_API_URL configuration. Set it to your API Gateway URL and rebuild.",
+      });
+      return;
+    }
+
+    setBookingTableState({ state: "loading", message: "Loading bookings..." });
+
+    try {
+      const query = new URLSearchParams({ from, to });
+      const response = await fetch(`${apiBaseUrl}/bookings?${query.toString()}`);
+      const payload = await response.json();
+
+      if (!response.ok) {
+        setBookingTableState({ state: "error", message: payload.error || "Could not load bookings." });
+        return;
+      }
+
+      setBookings(Array.isArray(payload.items) ? payload.items : []);
+      setBookingTableState({ state: "success", message: "" });
+    } catch (_error) {
+      setBookingTableState({ state: "error", message: "Network error while loading bookings." });
+    }
+  };
+
   useEffect(() => {
     loadTrips();
   }, []);
+
+  useEffect(() => {
+    loadBookings(bookingDateRange.from, bookingDateRange.to);
+  }, [bookingDateRange.from, bookingDateRange.to]);
 
   useEffect(() => {
     if (!editId && latestEndKm !== null) {
@@ -371,6 +502,11 @@ export default function App() {
   const handleGasChange = (event) => {
     const { name, value } = event.target;
     setGasForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleBookingChange = (event) => {
+    const { name, value } = event.target;
+    setBookingForm((prev) => ({ ...prev, [name]: value }));
   };
 
   const upsertProfile = (name) => {
@@ -505,6 +641,50 @@ export default function App() {
     setGasStatus({ state: "success", message: "Fuel entry deleted." });
   };
 
+  const handleBookingSubmit = async (event) => {
+    event.preventDefault();
+    setBookingStatus({ state: "loading", message: "Saving booking..." });
+
+    try {
+      if (!apiBaseUrl) {
+        setBookingStatus({
+          state: "error",
+          message: "Missing VITE_API_URL configuration. Set it to your API Gateway URL and rebuild.",
+        });
+        return;
+      }
+      const response = await fetch(`${apiBaseUrl}/bookings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          start_date: bookingForm.start_date,
+          end_date: bookingForm.end_date,
+          status: bookingForm.status,
+          guest_name: bookingForm.guest_name.trim() || undefined,
+          day_km: Number(bookingForm.day_km || 0),
+          notes: bookingForm.notes.trim() || undefined,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        setBookingStatus({ state: "error", message: payload.error || "Could not create booking." });
+        return;
+      }
+
+      setBookingStatus({
+        state: "success",
+        message: `Saved ${payload.status} booking · ${payload.nights} nights · CHF ${payload.estimate_total.toFixed(2)}`,
+      });
+      setBookingForm((prev) => ({ ...initialBookingForm, guest_name: prev.guest_name }));
+      await loadBookings(bookingDateRange.from, bookingDateRange.to);
+    } catch (_error) {
+      setBookingStatus({ state: "error", message: "Network error while saving booking." });
+    }
+  };
+
   return (
     <div className="page">
       <main className="layout layout-stack">
@@ -514,6 +694,7 @@ export default function App() {
             {[
               { id: "km", label: "KM" },
               { id: "gas", label: "Gas" },
+              { id: "booking", label: "Booking" },
               { id: "insights", label: "Insights" },
             ].map((view) => (
               <button
@@ -809,6 +990,159 @@ export default function App() {
                   </table>
                 </div>
               )}
+            </section>
+          </div>
+        )}
+
+        {activeView === "booking" && (
+          <div className="panel-grid">
+            <section className="card">
+              <header>
+                <p className="eyebrow">Calendar booking</p>
+                <h1>Create booking</h1>
+                <p className="subtitle">100/night + 100 cleaning + 0.50/km for daytime use.</p>
+              </header>
+
+              <form className="form" onSubmit={handleBookingSubmit}>
+                <label className="field">
+                  <span>Check-in date</span>
+                  <input
+                    type="date"
+                    name="start_date"
+                    value={bookingForm.start_date}
+                    onChange={handleBookingChange}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span>Check-out date</span>
+                  <input type="date" name="end_date" value={bookingForm.end_date} onChange={handleBookingChange} required />
+                </label>
+                <label className="field">
+                  <span>Status</span>
+                  <select name="status" value={bookingForm.status} onChange={handleBookingChange}>
+                    <option value="booked">Booked</option>
+                    <option value="blocked">Blocked</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Guest name</span>
+                  <input
+                    type="text"
+                    name="guest_name"
+                    value={bookingForm.guest_name}
+                    onChange={handleBookingChange}
+                    placeholder="Optional"
+                  />
+                </label>
+                <label className="field">
+                  <span>Daytime kilometers</span>
+                  <input
+                    type="number"
+                    name="day_km"
+                    value={bookingForm.day_km}
+                    onChange={handleBookingChange}
+                    min="0"
+                    step="0.1"
+                    placeholder="0"
+                  />
+                </label>
+                <label className="field">
+                  <span>Notes</span>
+                  <input type="text" name="notes" value={bookingForm.notes} onChange={handleBookingChange} placeholder="Optional" />
+                </label>
+                <article className="summary-card">
+                  <p className="summary-label">Live estimate</p>
+                  <p className="summary-value">CHF {bookingPreview.total.toFixed(2)}</p>
+                  <p className="summary-hint">{bookingPreview.nights} nights + CHF 100 cleaning + km fee</p>
+                </article>
+                <div className="form-actions">
+                  <button className="submit" type="submit" disabled={bookingStatus.state === "loading"}>
+                    {bookingStatus.state === "loading" ? "Saving..." : "Create booking"}
+                  </button>
+                </div>
+              </form>
+              {bookingStatus.state !== "idle" && <div className={`status ${bookingStatus.state}`}>{bookingStatus.message}</div>}
+            </section>
+
+            <section className="card table-card">
+              <header className="calendar-header">
+                <div>
+                  <p className="eyebrow">Availability</p>
+                  <h2>{monthLabel(visibleBookingMonth)}</h2>
+                </div>
+                <div className="calendar-nav">
+                  <button type="button" className="table-btn" onClick={() => setBookingMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}>
+                    Prev
+                  </button>
+                  <button type="button" className="table-btn" onClick={() => setBookingMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}>
+                    Next
+                  </button>
+                </div>
+              </header>
+
+              <div className="booking-legend">
+                <span className="legend-pill open">Open</span>
+                <span className="legend-pill booked">Booked</span>
+                <span className="legend-pill blocked">Blocked</span>
+              </div>
+
+              {bookingTableState.state === "error" ? (
+                <div className="status error">{bookingTableState.message}</div>
+              ) : (
+                <div className="calendar-grid" role="grid" aria-label="Booking calendar">
+                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((weekday) => (
+                    <div key={weekday} className="weekday-cell">
+                      {weekday}
+                    </div>
+                  ))}
+                  {calendarCells.map((cell) => (
+                    <div
+                      key={cell.iso}
+                      className={`day-cell ${cell.status} ${cell.isCurrentMonth ? "" : "outside"}`.trim()}
+                      role="gridcell"
+                      aria-label={`${cell.iso}: ${cell.status}`}
+                    >
+                      <span>{cell.day}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Start</th>
+                      <th>End</th>
+                      <th>Status</th>
+                      <th>Guest</th>
+                      <th>Nights</th>
+                      <th>Estimate CHF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bookings.length === 0 ? (
+                      <tr>
+                        <td colSpan="6" className="empty-cell">
+                          {bookingTableState.state === "loading" ? "Loading..." : "No bookings in this month."}
+                        </td>
+                      </tr>
+                    ) : (
+                      bookings.map((booking) => (
+                        <tr key={booking.id}>
+                          <td>{booking.start_date}</td>
+                          <td>{booking.end_date}</td>
+                          <td>{booking.status}</td>
+                          <td>{booking.guest_name || "—"}</td>
+                          <td>{booking.nights}</td>
+                          <td>{booking.estimate_total.toFixed(2)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </section>
           </div>
         )}
