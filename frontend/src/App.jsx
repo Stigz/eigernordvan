@@ -100,7 +100,21 @@ const saveProfiles = (profiles) => {
 const fuelStorageKey = "van_fuel_entries_v1";
 const workStorageKey = "van_work_planner_v1";
 const workPeople = ["Nic", "Kayla", "Jeanne", "Lüku"];
-const boardColumns = ["Backlog", "In Progress", "Review", "Done"];
+const boardColumns = ["Backlog", "In Progress", "Done"];
+const workStatuses = ["backlog", "in_progress", "done"];
+
+const boardColumnToStatus = {
+  Backlog: "backlog",
+  "In Progress": "in_progress",
+  Review: "in_progress",
+  Done: "done",
+};
+
+const statusToBoardColumn = {
+  backlog: "Backlog",
+  in_progress: "In Progress",
+  done: "Done",
+};
 
 const parseFuelEntries = () => {
   if (typeof window === "undefined") {
@@ -141,16 +155,66 @@ const saveFuelEntries = (entries) => {
 };
 
 const emptyWorkState = {
-  tasks: [],
-  todos: [],
-  board: [],
+  items: [],
 };
 
 const cloneEmptyWorkState = () => ({
-  tasks: [],
-  todos: [],
-  board: [],
+  items: [],
 });
+
+const normalizeWorkSubtask = (subtask) => ({
+  id: typeof subtask?.id === "string" ? subtask.id : crypto.randomUUID(),
+  title: typeof subtask?.title === "string" ? subtask.title : "",
+  status: workStatuses.includes(subtask?.status) ? subtask.status : subtask?.done ? "done" : "backlog",
+  estimate_hours: Number(subtask?.estimate_hours || 0) || 0,
+  time_entries: Array.isArray(subtask?.time_entries) ? subtask.time_entries : [],
+});
+
+const normalizeWorkItem = (item, fallbackKind = "todo") => ({
+  id: typeof item?.id === "string" ? item.id : crypto.randomUUID(),
+  kind: ["task", "todo", "board"].includes(item?.kind) ? item.kind : fallbackKind,
+  title: typeof item?.title === "string" ? item.title : "",
+  owner: typeof item?.owner === "string" ? item.owner : typeof item?.person === "string" ? item.person : workPeople[0],
+  status: workStatuses.includes(item?.status)
+    ? item.status
+    : typeof item?.column === "string"
+      ? boardColumnToStatus[item.column] || "backlog"
+      : item?.done
+        ? "done"
+        : "backlog",
+  priority: typeof item?.priority === "string" || typeof item?.priority === "number" ? item.priority : "P2",
+  due_date: typeof item?.due_date === "string" ? item.due_date : typeof item?.end_date === "string" ? item.end_date : "",
+  estimate_hours: Number(item?.estimate_hours || 0) || 0,
+  time_entries: Array.isArray(item?.time_entries) ? item.time_entries : [],
+  subtasks: Array.isArray(item?.subtasks) ? item.subtasks.map(normalizeWorkSubtask) : [],
+  created_at: typeof item?.created_at === "string" ? item.created_at : new Date().toISOString(),
+  updated_at: typeof item?.updated_at === "string" ? item.updated_at : new Date().toISOString(),
+  start_date: typeof item?.start_date === "string" ? item.start_date : "",
+});
+
+const migrateLegacyWorkState = (parsed) => {
+  const next = [];
+  if (Array.isArray(parsed?.tasks)) {
+    next.push(...parsed.tasks.map((task) => normalizeWorkItem({ ...task, kind: "task" }, "task")));
+  }
+  if (Array.isArray(parsed?.todos)) {
+    next.push(...parsed.todos.map((todo) => normalizeWorkItem({ ...todo, kind: "todo" }, "todo")));
+  }
+  if (Array.isArray(parsed?.board)) {
+    next.push(...parsed.board.map((card) => normalizeWorkItem({ ...card, kind: "board" }, "board")));
+  }
+  return { items: next };
+};
+
+const parseWorkStateFromPayload = (payload) => {
+  if (!payload || typeof payload !== "object") {
+    return cloneEmptyWorkState();
+  }
+  if (Array.isArray(payload.items)) {
+    return { items: payload.items.map((item) => normalizeWorkItem(item, item?.kind || "todo")) };
+  }
+  return migrateLegacyWorkState(payload);
+};
 
 const parseWorkState = () => {
   if (typeof window === "undefined") {
@@ -163,18 +227,17 @@ const parseWorkState = () => {
     if (!parsed || typeof parsed !== "object") {
       return cloneEmptyWorkState();
     }
-    return {
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
-      todos: Array.isArray(parsed.todos) ? parsed.todos : [],
-      board: Array.isArray(parsed.board) ? parsed.board : [],
-    };
+    if (Array.isArray(parsed.items)) {
+      return { items: parsed.items.map((item) => normalizeWorkItem(item, item?.kind || "todo")) };
+    }
+    return migrateLegacyWorkState(parsed);
   } catch (_error) {
     return cloneEmptyWorkState();
   }
 };
 
 const saveWorkState = (state) => {
-  localStorage.setItem(workStorageKey, JSON.stringify(state));
+  localStorage.setItem(workStorageKey, JSON.stringify({ items: Array.isArray(state.items) ? state.items : [] }));
 };
 
 const sumTimeEntryHours = (entries) =>
@@ -248,6 +311,10 @@ export default function App() {
   });
   const [workSyncStatus, setWorkSyncStatus] = useState({ state: "idle", message: "" });
   const [isWorkLoaded, setIsWorkLoaded] = useState(false);
+
+  const workTasks = useMemo(() => workState.items.filter((item) => item.kind === "task"), [workState.items]);
+  const workTodos = useMemo(() => workState.items.filter((item) => item.kind === "todo"), [workState.items]);
+  const workBoard = useMemo(() => workState.items.filter((item) => item.kind === "board"), [workState.items]);
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
   const latestEndKm = useMemo(
@@ -474,8 +541,8 @@ export default function App() {
 
   const personHoursSummary = useMemo(() => {
     return workPeople.map((person) => {
-      const taskHours = workState.tasks
-        .filter((task) => task.person === person)
+      const taskHours = workTasks
+        .filter((task) => task.owner === person)
         .reduce((sum, task) => {
           const ownHours = sumTimeEntryHours(task.time_entries || []);
           const subtaskHours = (task.subtasks || []).reduce(
@@ -485,8 +552,8 @@ export default function App() {
           return sum + ownHours + subtaskHours;
         }, 0);
 
-      const todoEstimateHours = workState.todos
-        .filter((todo) => todo.person === person)
+      const todoEstimateHours = workTodos
+        .filter((todo) => todo.owner === person)
         .reduce((sum, todo) => {
           const root = Number(todo.estimate_hours || 0) || 0;
           const subtasks = (todo.subtasks || []).reduce((subSum, subtask) => subSum + (Number(subtask.estimate_hours || 0) || 0), 0);
@@ -495,7 +562,7 @@ export default function App() {
 
       return { person, taskHours, todoEstimateHours };
     });
-  }, [workState]);
+  }, [workTasks, workTodos]);
 
   const loadTrips = async () => {
     if (!apiBaseUrl) {
@@ -606,10 +673,9 @@ export default function App() {
           setIsWorkLoaded(true);
           return;
         }
-        if (payload && Array.isArray(payload.tasks) && Array.isArray(payload.todos) && Array.isArray(payload.board)) {
-          setWorkState(payload);
-          saveWorkState(payload);
-        }
+        const migrated = parseWorkStateFromPayload(payload);
+        setWorkState(migrated);
+        saveWorkState(migrated);
         setWorkSyncStatus({ state: "success", message: "Work workspace synced." });
       } catch (_error) {
         setWorkSyncStatus({ state: "error", message: "Network error while loading work workspace." });
@@ -816,18 +882,23 @@ export default function App() {
 
     setWorkState((prev) => ({
       ...prev,
-      tasks: [
+      items: [
         {
           id: crypto.randomUUID(),
+          kind: "task",
           title: workTaskForm.title.trim(),
-          person: workTaskForm.person,
+          owner: workTaskForm.person,
+          status: "in_progress",
+          priority: "P2",
+          due_date: workTaskForm.end_date || "",
+          estimate_hours: 0,
           start_date: workTaskForm.start_date || "",
-          end_date: workTaskForm.end_date || "",
           created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
           time_entries: [],
           subtasks: [],
         },
-        ...prev.tasks,
+        ...prev.items,
       ],
     }));
     setWorkTaskForm((prev) => ({ ...prev, title: "", start_date: "", end_date: "" }));
@@ -852,7 +923,9 @@ export default function App() {
 
     setWorkState((prev) => ({
       ...prev,
-      tasks: prev.tasks.map((task) => (task.id === taskId ? { ...task, time_entries: [...(task.time_entries || []), entry] } : task)),
+      items: prev.items.map((task) =>
+        task.id === taskId ? { ...task, time_entries: [...(task.time_entries || []), entry], updated_at: new Date().toISOString() } : task,
+      ),
     }));
     event.currentTarget.reset();
   };
@@ -871,7 +944,9 @@ export default function App() {
     };
     setWorkState((prev) => ({
       ...prev,
-      tasks: prev.tasks.map((task) => (task.id === taskId ? { ...task, subtasks: [...(task.subtasks || []), subtask] } : task)),
+      items: prev.items.map((task) =>
+        task.id === taskId ? { ...task, subtasks: [...(task.subtasks || []), subtask], updated_at: new Date().toISOString() } : task,
+      ),
     }));
     event.currentTarget.reset();
   };
@@ -895,7 +970,7 @@ export default function App() {
 
     setWorkState((prev) => ({
       ...prev,
-      tasks: prev.tasks.map((task) => {
+      items: prev.items.map((task) => {
         if (task.id !== taskId) {
           return task;
         }
@@ -904,6 +979,7 @@ export default function App() {
           subtasks: (task.subtasks || []).map((subtask) =>
             subtask.id === subtaskId ? { ...subtask, time_entries: [...(subtask.time_entries || []), entry] } : subtask,
           ),
+          updated_at: new Date().toISOString(),
         };
       }),
     }));
@@ -917,17 +993,21 @@ export default function App() {
     }
     setWorkState((prev) => ({
       ...prev,
-      todos: [
+      items: [
         {
           id: crypto.randomUUID(),
+          kind: "todo",
           title: todoForm.title.trim(),
-          person: todoForm.person,
+          owner: todoForm.person,
+          status: "backlog",
+          priority: "P2",
           estimate_hours: Number(todoForm.estimate_hours || 0),
           due_date: todoForm.due_date || "",
-          done: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
           subtasks: [],
         },
-        ...prev.todos,
+        ...prev.items,
       ],
     }));
     setTodoForm((prev) => ({ ...prev, title: "", estimate_hours: "", due_date: "" }));
@@ -944,11 +1024,14 @@ export default function App() {
       id: crypto.randomUUID(),
       title,
       estimate_hours: Number(data.get("estimate_hours") || 0),
-      done: false,
+      status: "backlog",
+      time_entries: [],
     };
     setWorkState((prev) => ({
       ...prev,
-      todos: prev.todos.map((todo) => (todo.id === todoId ? { ...todo, subtasks: [...(todo.subtasks || []), subtask] } : todo)),
+      items: prev.items.map((todo) =>
+        todo.id === todoId ? { ...todo, subtasks: [...(todo.subtasks || []), subtask], updated_at: new Date().toISOString() } : todo,
+      ),
     }));
     event.currentTarget.reset();
   };
@@ -956,18 +1039,19 @@ export default function App() {
   const toggleTodoDone = (todoId, subtaskId = null) => {
     setWorkState((prev) => ({
       ...prev,
-      todos: prev.todos.map((todo) => {
+      items: prev.items.map((todo) => {
         if (todo.id !== todoId) {
           return todo;
         }
         if (!subtaskId) {
-          return { ...todo, done: !todo.done };
+          return { ...todo, status: todo.status === "done" ? "backlog" : "done", updated_at: new Date().toISOString() };
         }
         return {
           ...todo,
           subtasks: (todo.subtasks || []).map((subtask) =>
-            subtask.id === subtaskId ? { ...subtask, done: !subtask.done } : subtask,
+            subtask.id === subtaskId ? { ...subtask, status: subtask.status === "done" ? "backlog" : "done" } : subtask,
           ),
+          updated_at: new Date().toISOString(),
         };
       }),
     }));
@@ -980,16 +1064,20 @@ export default function App() {
     }
     setWorkState((prev) => ({
       ...prev,
-      board: [
+      items: [
         {
           id: crypto.randomUUID(),
+          kind: "board",
           title: boardForm.title.trim(),
-          person: boardForm.person,
+          owner: boardForm.person,
+          status: boardColumnToStatus[boardForm.column] || "backlog",
+          priority: "P2",
+          due_date: "",
           estimate_hours: Number(boardForm.estimate_hours || 0),
-          column: boardForm.column,
           created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         },
-        ...prev.board,
+        ...prev.items,
       ],
     }));
     setBoardForm((prev) => ({ ...prev, title: "", estimate_hours: "" }));
@@ -998,13 +1086,13 @@ export default function App() {
   const moveBoardTask = (taskId, direction) => {
     setWorkState((prev) => ({
       ...prev,
-      board: prev.board.map((task) => {
+      items: prev.items.map((task) => {
         if (task.id !== taskId) {
           return task;
         }
-        const index = boardColumns.indexOf(task.column);
+        const index = boardColumns.indexOf(statusToBoardColumn[task.status] || "Backlog");
         const next = Math.min(boardColumns.length - 1, Math.max(0, index + direction));
-        return { ...task, column: boardColumns[next] };
+        return { ...task, status: boardColumnToStatus[boardColumns[next]], updated_at: new Date().toISOString() };
       }),
     }));
   };
@@ -1558,8 +1646,8 @@ export default function App() {
               </form>
 
               <div className="stack-list">
-                {workState.tasks.length === 0 && <p className="subtitle">No work tasks yet.</p>}
-                {workState.tasks.map((task) => {
+                {workTasks.length === 0 && <p className="subtitle">No work tasks yet.</p>}
+                {workTasks.map((task) => {
                   const taskHours = sumTimeEntryHours(task.time_entries || []);
                   const subtaskHours = (task.subtasks || []).reduce(
                     (sum, subtask) => sum + sumTimeEntryHours(subtask.time_entries || []),
@@ -1568,10 +1656,10 @@ export default function App() {
                   return (
                     <details key={task.id} className="work-item">
                       <summary>
-                        <strong>{task.title}</strong> · {task.person} · {(taskHours + subtaskHours).toFixed(2)}h total
+                        <strong>{task.title}</strong> · {task.owner} · {(taskHours + subtaskHours).toFixed(2)}h total
                         <span className="muted">
                           {" "}
-                          ({task.start_date || "?"} → {task.end_date || "?"})
+                          ({task.start_date || "?"} → {task.due_date || "?"})
                         </span>
                       </summary>
                       <div className="details-content">
@@ -1659,14 +1747,14 @@ export default function App() {
               </form>
 
               <div className="stack-list">
-                {workState.todos.length === 0 && <p className="subtitle">No todos yet.</p>}
-                {workState.todos.map((todo) => (
+                {workTodos.length === 0 && <p className="subtitle">No todos yet.</p>}
+                {workTodos.map((todo) => (
                   <details key={todo.id} className="work-item">
                     <summary>
                       <label className="checkline">
-                        <input type="checkbox" checked={Boolean(todo.done)} onChange={() => toggleTodoDone(todo.id)} />
+                        <input type="checkbox" checked={todo.status === "done"} onChange={() => toggleTodoDone(todo.id)} />
                         <span>
-                          {todo.title} · {todo.person} · est. {(Number(todo.estimate_hours) || 0).toFixed(2)}h
+                          {todo.title} · {todo.owner} · est. {(Number(todo.estimate_hours) || 0).toFixed(2)}h
                         </span>
                       </label>
                     </summary>
@@ -1685,7 +1773,7 @@ export default function App() {
                         <label key={subtask.id} className="checkline">
                           <input
                             type="checkbox"
-                            checked={Boolean(subtask.done)}
+                            checked={subtask.status === "done"}
                             onChange={() => toggleTodoDone(todo.id, subtask.id)}
                           />
                           <span>
@@ -1740,13 +1828,13 @@ export default function App() {
                 {boardColumns.map((column, columnIndex) => (
                   <article key={column} className="board-column">
                     <h3>{column}</h3>
-                    {workState.board
-                      .filter((item) => item.column === column)
+                    {workBoard
+                      .filter((item) => (statusToBoardColumn[item.status] || "Backlog") === column)
                       .map((item) => (
                         <div className="board-card" key={item.id}>
                           <p>{item.title}</p>
                           <p className="subtitle">
-                            {item.person} · est. {(Number(item.estimate_hours) || 0).toFixed(2)}h
+                            {item.owner} · est. {(Number(item.estimate_hours) || 0).toFixed(2)}h
                           </p>
                           <div className="row-actions">
                             <button className="table-btn" type="button" onClick={() => moveBoardTask(item.id, -1)} disabled={columnIndex === 0}>
