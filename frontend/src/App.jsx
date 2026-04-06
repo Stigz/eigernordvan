@@ -176,7 +176,7 @@ const normalizeWorkSubtask = (subtask) => ({
   time_entries: Array.isArray(subtask?.time_entries) ? subtask.time_entries : [],
 });
 
-const normalizeWorkItem = (item, fallbackKind = "todo") => ({
+const normalizeWorkItem = (item, fallbackKind = "todo", fallbackRank = 0) => ({
   id: typeof item?.id === "string" ? item.id : crypto.randomUUID(),
   kind: ["task", "todo", "board"].includes(item?.kind) ? item.kind : fallbackKind,
   title: typeof item?.title === "string" ? item.title : "",
@@ -198,18 +198,25 @@ const normalizeWorkItem = (item, fallbackKind = "todo") => ({
   created_at: typeof item?.created_at === "string" ? item.created_at : new Date().toISOString(),
   updated_at: typeof item?.updated_at === "string" ? item.updated_at : new Date().toISOString(),
   start_date: typeof item?.start_date === "string" ? item.start_date : "",
+  rank: Number.isFinite(Number(item?.rank))
+    ? Number(item.rank)
+    : Number.isFinite(Number(item?.priority_order))
+      ? Number(item.priority_order)
+      : fallbackRank,
 });
 
 const migrateLegacyWorkState = (parsed) => {
   const next = [];
   if (Array.isArray(parsed?.tasks)) {
-    next.push(...parsed.tasks.map((task) => normalizeWorkItem({ ...task, kind: "task" }, "task")));
+    next.push(...parsed.tasks.map((task, index) => normalizeWorkItem({ ...task, kind: "task" }, "task", index + 1)));
   }
   if (Array.isArray(parsed?.todos)) {
-    next.push(...parsed.todos.map((todo) => normalizeWorkItem({ ...todo, kind: "todo" }, "todo")));
+    const offset = next.length;
+    next.push(...parsed.todos.map((todo, index) => normalizeWorkItem({ ...todo, kind: "todo" }, "todo", offset + index + 1)));
   }
   if (Array.isArray(parsed?.board)) {
-    next.push(...parsed.board.map((card) => normalizeWorkItem({ ...card, kind: "board" }, "board")));
+    const offset = next.length;
+    next.push(...parsed.board.map((card, index) => normalizeWorkItem({ ...card, kind: "board" }, "board", offset + index + 1)));
   }
   return { items: next };
 };
@@ -219,7 +226,7 @@ const parseWorkStateFromPayload = (payload) => {
     return cloneEmptyWorkState();
   }
   if (Array.isArray(payload.items)) {
-    return { items: payload.items.map((item) => normalizeWorkItem(item, item?.kind || "todo")) };
+    return { items: payload.items.map((item, index) => normalizeWorkItem(item, item?.kind || "todo", index + 1)) };
   }
   return migrateLegacyWorkState(payload);
 };
@@ -236,7 +243,7 @@ const parseWorkState = () => {
       return cloneEmptyWorkState();
     }
     if (Array.isArray(parsed.items)) {
-      return { items: parsed.items.map((item) => normalizeWorkItem(item, item?.kind || "todo")) };
+      return { items: parsed.items.map((item, index) => normalizeWorkItem(item, item?.kind || "todo", index + 1)) };
     }
     return migrateLegacyWorkState(parsed);
   } catch (_error) {
@@ -245,7 +252,12 @@ const parseWorkState = () => {
 };
 
 const saveWorkState = (state) => {
-  localStorage.setItem(workStorageKey, JSON.stringify({ items: Array.isArray(state.items) ? state.items : [] }));
+  const items = Array.isArray(state.items)
+    ? [...state.items]
+        .sort((a, b) => (Number(a.rank) || 0) - (Number(b.rank) || 0))
+        .map((item, index) => ({ ...item, rank: index + 1 }))
+    : [];
+  localStorage.setItem(workStorageKey, JSON.stringify({ items }));
 };
 
 const sumTimeEntryHours = (entries) =>
@@ -321,7 +333,6 @@ export default function App() {
     start_date: "",
   });
   const [workFilters, setWorkFilters] = useState({ owner: "all", status: "all", priority: "all", due: "all" });
-  const [workSort, setWorkSort] = useState({ field: "due_date", direction: "asc" });
   const [workSyncStatus, setWorkSyncStatus] = useState({ state: "idle", message: "" });
   const [isWorkLoaded, setIsWorkLoaded] = useState(false);
 
@@ -584,35 +595,22 @@ export default function App() {
     });
   }, [workState.items, workFilters]);
 
-  const sortedWorkItems = useMemo(() => {
-    const priorityRank = (priority) => {
-      const match = String(priority || "").match(/\d+/);
-      return match ? Number(match[0]) : 99;
-    };
+  const rankedWorkItems = useMemo(
+    () =>
+      [...workState.items].sort((a, b) => {
+        const rankComparison = (Number(a.rank) || 0) - (Number(b.rank) || 0);
+        if (rankComparison !== 0) {
+          return rankComparison;
+        }
+        return (a.title || "").localeCompare(b.title || "");
+      }),
+    [workState.items],
+  );
 
-    return [...filteredWorkItems].sort((a, b) => {
-      const direction = workSort.direction === "desc" ? -1 : 1;
-      const field = workSort.field;
-      let comparison = 0;
-
-      if (field === "priority") {
-        comparison = priorityRank(a.priority) - priorityRank(b.priority);
-      } else if (field === "due_date") {
-        comparison = (a.due_date || "9999-12-31").localeCompare(b.due_date || "9999-12-31");
-      } else if (field === "owner") {
-        comparison = (a.owner || "").localeCompare(b.owner || "");
-      } else if (field === "status") {
-        comparison = (migrateBoardStatus(a.status) || "").localeCompare(migrateBoardStatus(b.status) || "");
-      } else if (field === "updated_at") {
-        comparison = new Date(a.updated_at || 0) - new Date(b.updated_at || 0);
-      }
-
-      if (comparison !== 0) {
-        return comparison * direction;
-      }
-      return (a.title || "").localeCompare(b.title || "") * direction;
-    });
-  }, [filteredWorkItems, workSort]);
+  const rankedFilteredWorkItems = useMemo(
+    () => rankedWorkItems.filter((item) => filteredWorkItems.some((filtered) => filtered.id === item.id)),
+    [rankedWorkItems, filteredWorkItems],
+  );
 
   const loadTrips = async () => {
     if (!apiBaseUrl) {
@@ -787,11 +785,6 @@ export default function App() {
     setWorkFilters((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleWorkSortChange = (event) => {
-    const { name, value } = event.target;
-    setWorkSort((prev) => ({ ...prev, [name]: value }));
-  };
-
   const upsertProfile = (name) => {
     const normalized = name.trim();
     if (!normalized) {
@@ -944,6 +937,7 @@ export default function App() {
           start_date: workItemForm.start_date || "",
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
+          rank: prev.items.length + 1,
           time_entries: [],
           subtasks: [],
         },
@@ -966,6 +960,29 @@ export default function App() {
         return { ...task, status: boardColumnToStatus[boardColumns[next]], updated_at: new Date().toISOString() };
       }),
     }));
+  };
+
+  const moveWorkItemRank = (itemId, direction) => {
+    setWorkState((prev) => {
+      const orderedItems = [...prev.items].sort((a, b) => (Number(a.rank) || 0) - (Number(b.rank) || 0));
+      const fromIndex = orderedItems.findIndex((item) => item.id === itemId);
+      const toIndex = fromIndex + direction;
+      if (fromIndex < 0 || toIndex < 0 || toIndex >= orderedItems.length) {
+        return prev;
+      }
+
+      const [moved] = orderedItems.splice(fromIndex, 1);
+      orderedItems.splice(toIndex, 0, moved);
+
+      return {
+        ...prev,
+        items: orderedItems.map((item, index) => ({
+          ...item,
+          rank: index + 1,
+          updated_at: item.id === moved.id ? new Date().toISOString() : item.updated_at,
+        })),
+      };
+    });
   };
 
   const handleBookingSubmit = async (event) => {
@@ -1524,7 +1541,7 @@ export default function App() {
                 </button>
               </form>
               <header>
-                <p className="eyebrow">Sort and filter</p>
+                <p className="eyebrow">Filter</p>
               </header>
               <div className="inline-grid four-col">
                 <select name="owner" value={workFilters.owner} onChange={handleWorkFilterChange}>
@@ -1555,24 +1572,12 @@ export default function App() {
                   <option value="no_due">No due date</option>
                 </select>
               </div>
-              <div className="inline-grid two-col">
-                <select name="field" value={workSort.field} onChange={handleWorkSortChange}>
-                  <option value="due_date">Sort by due date</option>
-                  <option value="priority">Sort by priority</option>
-                  <option value="owner">Sort by owner</option>
-                  <option value="status">Sort by status</option>
-                  <option value="updated_at">Sort by updated at</option>
-                </select>
-                <select name="direction" value={workSort.direction} onChange={handleWorkSortChange}>
-                  <option value="asc">Ascending</option>
-                  <option value="desc">Descending</option>
-                </select>
-              </div>
-
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
+                      <th>Rank</th>
+                      <th>Order</th>
                       <th>Priority</th>
                       <th>Title</th>
                       <th>Owner</th>
@@ -1584,15 +1589,31 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedWorkItems.length === 0 ? (
+                    {rankedFilteredWorkItems.length === 0 ? (
                       <tr>
-                        <td colSpan="8" className="empty-cell">
+                        <td colSpan="10" className="empty-cell">
                           No matching work items.
                         </td>
                       </tr>
                     ) : (
-                      sortedWorkItems.map((item) => (
+                      rankedFilteredWorkItems.map((item, index) => (
                         <tr key={item.id}>
+                          <td>{item.rank || index + 1}</td>
+                          <td>
+                            <div className="row-actions">
+                              <button className="table-btn" type="button" onClick={() => moveWorkItemRank(item.id, -1)} disabled={index === 0}>
+                                ↑
+                              </button>
+                              <button
+                                className="table-btn"
+                                type="button"
+                                onClick={() => moveWorkItemRank(item.id, 1)}
+                                disabled={index === rankedFilteredWorkItems.length - 1}
+                              >
+                                ↓
+                              </button>
+                            </div>
+                          </td>
                           <td>{item.priority || "P2"}</td>
                           <td>{item.title}</td>
                           <td>{item.owner}</td>
@@ -1618,7 +1639,7 @@ export default function App() {
                 {boardColumns.map((column, columnIndex) => (
                   <article key={column} className="board-column">
                     <h3>{column}</h3>
-                    {sortedWorkItems
+                    {rankedFilteredWorkItems
                       .filter((item) => (statusToBoardColumn[migrateBoardStatus(item.status)] || "Backlog") === column)
                       .map((item) => (
                         <div className="board-card" key={item.id}>
