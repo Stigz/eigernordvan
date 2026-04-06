@@ -10,8 +10,8 @@ If a correction is needed in the future, the system should write a new event tha
 ## Architecture
 - **Frontend:** React + Vite single-page form (`frontend/`)
 - **Backend:** Go AWS Lambda (`backend/`)
-- **API:** API Gateway HTTP `POST /trip` and `GET /trips`
-- **Storage:** DynamoDB append-only ledger (`id` primary key)
+- **API:** API Gateway HTTP (`/trip`, `/trips`, `/bookings`, `/work`)
+- **Storage:** DynamoDB tables for ledger, bookings, and work planner state (`id` primary key)
 - **Infrastructure:** Terraform (`infra/`)
 
 ## Data model (MVP)
@@ -92,6 +92,16 @@ Response includes calculated `delta_km` and `trip_cost_chf`.
 ```
 
 `PUT /trip/{id}` and `DELETE /trip/{id}` are also supported for correcting or removing existing entries.
+
+`GET /work` and `PUT /work`
+```json
+{
+  "tasks": [],
+  "todos": [],
+  "board": []
+}
+```
+This stores and retrieves the full Work workspace state for cross-device persistence.
 
 ## Notes for future features
 - **OCR** would attach a new event (`event_type = trip_ocr`) referencing the original trip ID.

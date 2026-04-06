@@ -22,3 +22,8 @@ output "bookings_table_name" {
   description = "Name of the DynamoDB table storing calendar bookings."
   value       = aws_dynamodb_table.bookings.name
 }
+
+output "work_table_name" {
+  description = "Name of the DynamoDB table storing work planner state."
+  value       = aws_dynamodb_table.work_planner.name
+}

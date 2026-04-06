@@ -22,6 +22,12 @@ variable "bookings_table_name" {
   default     = "van_bookings"
 }
 
+variable "work_table_name" {
+  type        = string
+  description = "DynamoDB table name for work planning state."
+  default     = "van_work_planner"
+}
+
 variable "lambda_zip_path" {
   type        = string
   description = "Path to the Lambda deployment package zip."
