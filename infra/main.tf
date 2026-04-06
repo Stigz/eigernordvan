@@ -77,6 +77,21 @@ resource "aws_dynamodb_table" "bookings" {
   }
 }
 
+resource "aws_dynamodb_table" "work_planner" {
+  name         = var.work_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
 resource "aws_iam_role" "lambda_role" {
   name = "${var.project_name}-lambda-role"
 
@@ -113,6 +128,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Resource = [
           aws_dynamodb_table.trip_ledger.arn,
           aws_dynamodb_table.bookings.arn,
+          aws_dynamodb_table.work_planner.arn,
           "${aws_dynamodb_table.bookings.arn}/index/*"
         ]
       },
@@ -142,6 +158,7 @@ resource "aws_lambda_function" "trip_logger" {
     variables = {
       TABLE_NAME         = aws_dynamodb_table.trip_ledger.name
       BOOKING_TABLE_NAME = aws_dynamodb_table.bookings.name
+      WORK_TABLE_NAME    = aws_dynamodb_table.work_planner.name
     }
   }
 
@@ -220,6 +237,18 @@ resource "aws_apigatewayv2_route" "bookings_update_route" {
 resource "aws_apigatewayv2_route" "bookings_delete_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "DELETE /bookings/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "work_get_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /work"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "work_put_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "PUT /work"
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 

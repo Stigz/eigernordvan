@@ -107,9 +107,16 @@ type bookingRecord struct {
 	UpdatedAt     string  `json:"updated_at"`
 }
 
+type workStatePayload struct {
+	Tasks []map[string]any `json:"tasks"`
+	Todos []map[string]any `json:"todos"`
+	Board []map[string]any `json:"board"`
+}
+
 type handler struct {
 	tableName        string
 	bookingTableName string
+	workTableName    string
 	corsOrigin       string
 	db               *dynamodb.Client
 }
@@ -129,6 +136,10 @@ func main() {
 	if bookingTableName == "" {
 		panic("BOOKING_TABLE_NAME is required")
 	}
+	workTableName := os.Getenv("WORK_TABLE_NAME")
+	if workTableName == "" {
+		panic("WORK_TABLE_NAME is required")
+	}
 
 	corsOrigin := os.Getenv("CORS_ALLOW_ORIGIN")
 	if corsOrigin == "" {
@@ -138,6 +149,7 @@ func main() {
 	h := &handler{
 		tableName:        tableName,
 		bookingTableName: bookingTableName,
+		workTableName:    workTableName,
 		corsOrigin:       corsOrigin,
 		db:               dynamodb.NewFromConfig(cfg),
 	}
@@ -174,6 +186,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/bookings" {
 			return h.handleListBookings(ctx, request)
 		}
+		if path == "/work" {
+			return h.handleGetWork(ctx)
+		}
 		if strings.HasPrefix(path, "/bookings/") {
 			return h.handleGetBooking(ctx, strings.TrimPrefix(path, "/bookings/"))
 		}
@@ -183,6 +198,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		}
 		if strings.HasPrefix(path, "/bookings/") {
 			return h.handleUpdateBooking(ctx, request, strings.TrimPrefix(path, "/bookings/"))
+		}
+		if path == "/work" {
+			return h.handlePutWork(ctx, request)
 		}
 	case http.MethodDelete:
 		if strings.HasPrefix(path, "/trip/") {
@@ -635,6 +653,66 @@ func (h *handler) handleDeleteBooking(ctx context.Context, id string) (events.AP
 	return h.respond(http.StatusOK, map[string]string{"status": "deleted"}), nil
 }
 
+func (h *handler) handleGetWork(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
+	result, err := h.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &h.workTableName,
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: "work-state"},
+		},
+	})
+	if err != nil {
+		log.Printf("get work state failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch work state"), nil
+	}
+	if len(result.Item) == 0 {
+		return h.respond(http.StatusOK, workStatePayload{
+			Tasks: []map[string]any{},
+			Todos: []map[string]any{},
+			Board: []map[string]any{},
+		}), nil
+	}
+
+	payloadAttr, ok := result.Item["payload"].(*types.AttributeValueMemberS)
+	if !ok {
+		return h.respondError(http.StatusInternalServerError, "stored work payload is invalid"), nil
+	}
+
+	var state workStatePayload
+	if err := json.Unmarshal([]byte(payloadAttr.Value), &state); err != nil {
+		log.Printf("unmarshal work state failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "stored work payload is invalid json"), nil
+	}
+	return h.respond(http.StatusOK, state), nil
+}
+
+func (h *handler) handlePutWork(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	normalized, err := normalizeAndValidateWorkPayload([]byte(request.Body))
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	item := map[string]types.AttributeValue{
+		"id":         &types.AttributeValueMemberS{Value: "work-state"},
+		"payload":    &types.AttributeValueMemberS{Value: string(normalized)},
+		"updated_at": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+	}
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &h.workTableName,
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("put work state failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to store work state"), nil
+	}
+
+	var state workStatePayload
+	if err := json.Unmarshal(normalized, &state); err != nil {
+		log.Printf("normalized work payload unmarshal failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to read normalized work state"), nil
+	}
+	return h.respond(http.StatusOK, state), nil
+}
+
 func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
 	record, err := parseEventRecord(item)
 	if err != nil {
@@ -1001,6 +1079,49 @@ func safeString(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
+}
+
+func normalizeAndValidateWorkPayload(raw []byte) ([]byte, error) {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		raw = []byte(`{}`)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, errors.New("invalid json payload")
+	}
+
+	readArray := func(key string) ([]map[string]any, error) {
+		value, exists := payload[key]
+		if !exists || len(value) == 0 {
+			return []map[string]any{}, nil
+		}
+		var out []map[string]any
+		if err := json.Unmarshal(value, &out); err != nil {
+			return nil, fmt.Errorf("%s must be an array", key)
+		}
+		return out, nil
+	}
+
+	tasks, err := readArray("tasks")
+	if err != nil {
+		return nil, err
+	}
+	todos, err := readArray("todos")
+	if err != nil {
+		return nil, err
+	}
+	board, err := readArray("board")
+	if err != nil {
+		return nil, err
+	}
+
+	normalized := workStatePayload{
+		Tasks: tasks,
+		Todos: todos,
+		Board: board,
+	}
+	return json.Marshal(normalized)
 }
 
 func roundMoney(value float64) float64 {
