@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 const apiUrl = import.meta.env.VITE_API_URL;
 
@@ -168,12 +168,23 @@ const cloneEmptyWorkState = () => ({
   items: [],
 });
 
+const normalizeTimeEntry = (entry) => {
+  const parsedHours = Number(entry?.hours || 0);
+  return {
+    id: typeof entry?.id === "string" ? entry.id : crypto.randomUUID(),
+    date: typeof entry?.date === "string" ? entry.date : formatDateISO(new Date()),
+    note: typeof entry?.note === "string" ? entry.note : "",
+    hours: Number.isFinite(parsedHours) ? parsedHours : 0,
+    created_at: typeof entry?.created_at === "string" ? entry.created_at : new Date().toISOString(),
+  };
+};
+
 const normalizeWorkSubtask = (subtask) => ({
   id: typeof subtask?.id === "string" ? subtask.id : crypto.randomUUID(),
   title: typeof subtask?.title === "string" ? subtask.title : "",
   status: workStatuses.includes(subtask?.status) ? subtask.status : subtask?.done ? "done" : "backlog",
   estimate_hours: Number(subtask?.estimate_hours || 0) || 0,
-  time_entries: Array.isArray(subtask?.time_entries) ? subtask.time_entries : [],
+  time_entries: Array.isArray(subtask?.time_entries) ? subtask.time_entries.map(normalizeTimeEntry) : [],
 });
 
 const normalizeWorkItem = (item, fallbackKind = "todo", fallbackRank = 0) => ({
@@ -193,7 +204,7 @@ const normalizeWorkItem = (item, fallbackKind = "todo", fallbackRank = 0) => ({
   priority: typeof item?.priority === "string" || typeof item?.priority === "number" ? item.priority : "P2",
   due_date: typeof item?.due_date === "string" ? item.due_date : typeof item?.end_date === "string" ? item.end_date : "",
   estimate_hours: Number(item?.estimate_hours || 0) || 0,
-  time_entries: Array.isArray(item?.time_entries) ? item.time_entries : [],
+  time_entries: Array.isArray(item?.time_entries) ? item.time_entries.map(normalizeTimeEntry) : [],
   subtasks: Array.isArray(item?.subtasks) ? item.subtasks.map(normalizeWorkSubtask) : [],
   created_at: typeof item?.created_at === "string" ? item.created_at : new Date().toISOString(),
   updated_at: typeof item?.updated_at === "string" ? item.updated_at : new Date().toISOString(),
@@ -277,6 +288,8 @@ const loggedHoursForItem = (item) => {
   const subtaskLogged = (item?.subtasks || []).reduce((sum, subtask) => sum + sumTimeEntryHours(subtask?.time_entries || []), 0);
   return rootLogged + subtaskLogged;
 };
+
+const varianceHoursForItem = (item) => loggedHoursForItem(item) - estimateHoursForItem(item);
 
 const compareByOdometerThenTime = (a, b) => {
   if (a.odometer_km !== b.odometer_km) {
@@ -566,8 +579,18 @@ export default function App() {
         .filter((item) => item.owner === person)
         .reduce((sum, item) => sum + estimateHoursForItem(item), 0);
 
-      return { person, taskHours: trackedHours, todoEstimateHours: estimatedHours };
+      return { person, taskHours: trackedHours, todoEstimateHours: estimatedHours, varianceHours: trackedHours - estimatedHours };
     });
+  }, [workState.items]);
+
+  const aggregateWorkMetrics = useMemo(() => {
+    const estimateHours = workState.items.reduce((sum, item) => sum + estimateHoursForItem(item), 0);
+    const loggedHours = workState.items.reduce((sum, item) => sum + loggedHoursForItem(item), 0);
+    return {
+      estimateHours,
+      loggedHours,
+      varianceHours: loggedHours - estimateHours,
+    };
   }, [workState.items]);
 
   const filteredWorkItems = useMemo(() => {
@@ -981,6 +1004,111 @@ export default function App() {
           rank: index + 1,
           updated_at: item.id === moved.id ? new Date().toISOString() : item.updated_at,
         })),
+      };
+    });
+  };
+
+  const updateWorkItem = (itemId, updater) => {
+    setWorkState((prev) => ({
+      ...prev,
+      items: prev.items.map((item) => {
+        if (item.id !== itemId) {
+          return item;
+        }
+        return {
+          ...updater(item),
+          updated_at: new Date().toISOString(),
+        };
+      }),
+    }));
+  };
+
+  const handleWorkEstimateChange = (itemId, value) => {
+    updateWorkItem(itemId, (item) => ({ ...item, estimate_hours: Math.max(0, Number(value || 0)) }));
+  };
+
+  const handleAddWorkSubtask = (event, itemId) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const title = String(form.get("subtask_title") || "").trim();
+    const estimateHours = Math.max(0, Number(form.get("subtask_estimate_hours") || 0));
+    if (!title) {
+      return;
+    }
+    updateWorkItem(itemId, (item) => ({
+      ...item,
+      subtasks: [
+        ...item.subtasks,
+        { id: crypto.randomUUID(), title, status: "backlog", estimate_hours: estimateHours, time_entries: [] },
+      ],
+    }));
+    event.currentTarget.reset();
+  };
+
+  const handleToggleSubtaskDone = (itemId, subtaskId) => {
+    updateWorkItem(itemId, (item) => ({
+      ...item,
+      subtasks: item.subtasks.map((subtask) =>
+        subtask.id === subtaskId ? { ...subtask, status: subtask.status === "done" ? "backlog" : "done" } : subtask,
+      ),
+    }));
+  };
+
+  const handleSubtaskEstimateChange = (itemId, subtaskId, value) => {
+    updateWorkItem(itemId, (item) => ({
+      ...item,
+      subtasks: item.subtasks.map((subtask) =>
+        subtask.id === subtaskId ? { ...subtask, estimate_hours: Math.max(0, Number(value || 0)) } : subtask,
+      ),
+    }));
+  };
+
+  const handleDeleteSubtask = (itemId, subtaskId) => {
+    updateWorkItem(itemId, (item) => ({
+      ...item,
+      subtasks: item.subtasks.filter((subtask) => subtask.id !== subtaskId),
+    }));
+  };
+
+  const handleAddWorkTimeEntry = (event, itemId, subtaskId = null) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const hours = Number(form.get("hours") || 0);
+    if (!(Number.isFinite(hours) && hours > 0)) {
+      return;
+    }
+    const entry = normalizeTimeEntry({
+      date: String(form.get("date") || formatDateISO(new Date())),
+      note: String(form.get("note") || "").trim(),
+      hours,
+    });
+
+    updateWorkItem(itemId, (item) => {
+      if (!subtaskId) {
+        return { ...item, time_entries: [...item.time_entries, entry] };
+      }
+      return {
+        ...item,
+        subtasks: item.subtasks.map((subtask) =>
+          subtask.id === subtaskId ? { ...subtask, time_entries: [...subtask.time_entries, entry] } : subtask,
+        ),
+      };
+    });
+    event.currentTarget.reset();
+  };
+
+  const handleDeleteWorkTimeEntry = (itemId, entryId, subtaskId = null) => {
+    updateWorkItem(itemId, (item) => {
+      if (!subtaskId) {
+        return { ...item, time_entries: item.time_entries.filter((entry) => entry.id !== entryId) };
+      }
+      return {
+        ...item,
+        subtasks: item.subtasks.map((subtask) =>
+          subtask.id === subtaskId
+            ? { ...subtask, time_entries: subtask.time_entries.filter((entry) => entry.id !== entryId) }
+            : subtask,
+        ),
       };
     });
   };
@@ -1584,6 +1712,7 @@ export default function App() {
                       <th>Status</th>
                       <th>Estimate</th>
                       <th>Logged</th>
+                      <th>Variance</th>
                       <th>Due date</th>
                       <th>Updated at</th>
                     </tr>
@@ -1591,38 +1720,163 @@ export default function App() {
                   <tbody>
                     {rankedFilteredWorkItems.length === 0 ? (
                       <tr>
-                        <td colSpan="10" className="empty-cell">
+                        <td colSpan="11" className="empty-cell">
                           No matching work items.
                         </td>
                       </tr>
                     ) : (
                       rankedFilteredWorkItems.map((item, index) => (
-                        <tr key={item.id}>
-                          <td>{item.rank || index + 1}</td>
-                          <td>
-                            <div className="row-actions">
-                              <button className="table-btn" type="button" onClick={() => moveWorkItemRank(item.id, -1)} disabled={index === 0}>
-                                ↑
-                              </button>
-                              <button
-                                className="table-btn"
-                                type="button"
-                                onClick={() => moveWorkItemRank(item.id, 1)}
-                                disabled={index === rankedFilteredWorkItems.length - 1}
-                              >
-                                ↓
-                              </button>
-                            </div>
-                          </td>
-                          <td>{item.priority || "P2"}</td>
-                          <td>{item.title}</td>
-                          <td>{item.owner}</td>
-                          <td>{(statusToBoardColumn[migrateBoardStatus(item.status)] || "Backlog").replace("_", " ")}</td>
-                          <td>{estimateHoursForItem(item).toFixed(2)}h</td>
-                          <td>{loggedHoursForItem(item).toFixed(2)}h</td>
-                          <td>{item.due_date || "—"}</td>
-                          <td>{item.updated_at ? new Date(item.updated_at).toLocaleString() : "—"}</td>
-                        </tr>
+                        <Fragment key={item.id}>
+                          <tr>
+                            <td>{item.rank || index + 1}</td>
+                            <td>
+                              <div className="row-actions">
+                                <button className="table-btn" type="button" onClick={() => moveWorkItemRank(item.id, -1)} disabled={index === 0}>
+                                  ↑
+                                </button>
+                                <button
+                                  className="table-btn"
+                                  type="button"
+                                  onClick={() => moveWorkItemRank(item.id, 1)}
+                                  disabled={index === rankedFilteredWorkItems.length - 1}
+                                >
+                                  ↓
+                                </button>
+                              </div>
+                            </td>
+                            <td>{item.priority || "P2"}</td>
+                            <td>{item.title}</td>
+                            <td>{item.owner}</td>
+                            <td>{(statusToBoardColumn[migrateBoardStatus(item.status)] || "Backlog").replace("_", " ")}</td>
+                            <td>{estimateHoursForItem(item).toFixed(2)}h</td>
+                            <td>{loggedHoursForItem(item).toFixed(2)}h</td>
+                            <td>{varianceHoursForItem(item).toFixed(2)}h</td>
+                            <td>{item.due_date || "—"}</td>
+                            <td>{item.updated_at ? new Date(item.updated_at).toLocaleString() : "—"}</td>
+                          </tr>
+                          <tr>
+                            <td colSpan="11">
+                              <details className="work-item">
+                                <summary>
+                                  Details · estimate, checklist, and time log <span className="muted">({item.title})</span>
+                                </summary>
+                                <div className="details-content">
+                                  <div className="inline-grid details-three-col">
+                                    <label className="field compact-form">
+                                      <span>Item estimate (hours)</span>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="0.25"
+                                        value={item.estimate_hours}
+                                        onChange={(event) => handleWorkEstimateChange(item.id, event.target.value)}
+                                      />
+                                    </label>
+                                    <div className="summary-card">
+                                      <p className="summary-label">Item logged</p>
+                                      <p className="summary-value">{sumTimeEntryHours(item.time_entries || []).toFixed(2)}h</p>
+                                    </div>
+                                    <div className="summary-card">
+                                      <p className="summary-label">Total variance</p>
+                                      <p className="summary-value">{varianceHoursForItem(item).toFixed(2)}h</p>
+                                    </div>
+                                  </div>
+
+                                  <form className="inline-grid details-subtask-form" onSubmit={(event) => handleAddWorkSubtask(event, item.id)}>
+                                    <input name="subtask_title" placeholder="Checklist subitem title" required />
+                                    <input type="number" step="0.25" min="0" name="subtask_estimate_hours" placeholder="Estimate h" />
+                                    <button type="submit" className="table-btn">
+                                      Add subitem
+                                    </button>
+                                  </form>
+
+                                  <div className="stack-list">
+                                    {item.subtasks.map((subtask) => (
+                                      <div key={subtask.id} className="sub-item">
+                                        <div className="checkline">
+                                          <input
+                                            type="checkbox"
+                                            checked={subtask.status === "done"}
+                                            onChange={() => handleToggleSubtaskDone(item.id, subtask.id)}
+                                          />
+                                          <strong>{subtask.title}</strong>
+                                          <span className="muted">{sumTimeEntryHours(subtask.time_entries || []).toFixed(2)}h logged</span>
+                                          <button className="table-btn danger" type="button" onClick={() => handleDeleteSubtask(item.id, subtask.id)}>
+                                            Remove
+                                          </button>
+                                        </div>
+                                        <div className="inline-grid details-subtask-row">
+                                          <label className="field compact-form">
+                                            <span>Subitem estimate (h)</span>
+                                            <input
+                                              type="number"
+                                              min="0"
+                                              step="0.25"
+                                              value={subtask.estimate_hours}
+                                              onChange={(event) => handleSubtaskEstimateChange(item.id, subtask.id, event.target.value)}
+                                            />
+                                          </label>
+                                          <form
+                                            className="inline-grid details-time-entry-grid"
+                                            onSubmit={(event) => handleAddWorkTimeEntry(event, item.id, subtask.id)}
+                                          >
+                                            <input type="date" name="date" defaultValue={formatDateISO(new Date())} />
+                                            <input type="number" min="0.25" step="0.25" name="hours" placeholder="Hours" required />
+                                            <input name="note" placeholder="Note (optional)" />
+                                            <button type="submit" className="table-btn">
+                                              Log time
+                                            </button>
+                                          </form>
+                                        </div>
+                                        <ul className="stack-list">
+                                          {(subtask.time_entries || []).map((entry) => (
+                                            <li key={entry.id} className="checkline">
+                                              <span>
+                                                {entry.date} · {Number(entry.hours).toFixed(2)}h {entry.note ? `· ${entry.note}` : ""}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                className="table-btn danger"
+                                                onClick={() => handleDeleteWorkTimeEntry(item.id, entry.id, subtask.id)}
+                                              >
+                                                Delete
+                                              </button>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  <form className="inline-grid details-time-entry-grid" onSubmit={(event) => handleAddWorkTimeEntry(event, item.id)}>
+                                    <input type="date" name="date" defaultValue={formatDateISO(new Date())} />
+                                    <input type="number" min="0.25" step="0.25" name="hours" placeholder="Hours" required />
+                                    <input name="note" placeholder="Item time entry note (optional)" />
+                                    <button type="submit" className="table-btn">
+                                      Add item time
+                                    </button>
+                                  </form>
+                                  <ul className="stack-list">
+                                    {(item.time_entries || []).map((entry) => (
+                                      <li key={entry.id} className="checkline">
+                                        <span>
+                                          {entry.date} · {Number(entry.hours).toFixed(2)}h {entry.note ? `· ${entry.note}` : ""}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          className="table-btn danger"
+                                          onClick={() => handleDeleteWorkTimeEntry(item.id, entry.id)}
+                                        >
+                                          Delete
+                                        </button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </details>
+                            </td>
+                          </tr>
+                        </Fragment>
                       ))
                     )}
                   </tbody>
@@ -1689,11 +1943,20 @@ export default function App() {
             </div>
 
             <div className="summary-grid compact-summary-grid">
+              <article className="summary-card compact-summary-card">
+                <p className="summary-label">Work variance</p>
+                <p className="summary-value">{aggregateWorkMetrics.varianceHours.toFixed(2)}h</p>
+                <p className="summary-hint">
+                  Logged {aggregateWorkMetrics.loggedHours.toFixed(2)}h vs est. {aggregateWorkMetrics.estimateHours.toFixed(2)}h
+                </p>
+              </article>
               {personHoursSummary.map((item) => (
                 <article key={item.person} className="summary-card compact-summary-card">
                   <p className="summary-label">{item.person}</p>
                   <p className="summary-value">{item.taskHours.toFixed(2)}h tracked</p>
-                  <p className="summary-hint">{item.todoEstimateHours.toFixed(2)}h estimated todos</p>
+                  <p className="summary-hint">
+                    Est. {item.todoEstimateHours.toFixed(2)}h · variance {item.varianceHours.toFixed(2)}h
+                  </p>
                 </article>
               ))}
             </div>
