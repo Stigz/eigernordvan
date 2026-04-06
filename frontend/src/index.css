@@ -510,6 +510,24 @@ th {
   gap: 10px;
 }
 
+.details-three-col {
+  grid-template-columns: minmax(220px, 1fr) repeat(2, minmax(180px, 1fr));
+  align-items: end;
+}
+
+.details-subtask-form {
+  grid-template-columns: minmax(220px, 1fr) 140px auto;
+}
+
+.details-subtask-row {
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+}
+
+.details-time-entry-grid {
+  grid-template-columns: 140px 110px minmax(0, 1fr) auto;
+}
+
 .compact-form {
   gap: 8px;
 }
@@ -560,6 +578,13 @@ th {
   .inline-grid.four-col,
   .board-grid,
   .compact-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .details-three-col,
+  .details-subtask-form,
+  .details-subtask-row,
+  .details-time-entry-grid {
     grid-template-columns: 1fr;
   }
 }
