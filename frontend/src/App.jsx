@@ -102,6 +102,12 @@ const workStorageKey = "van_work_planner_v1";
 const workPeople = ["Nic", "Kayla", "Jeanne", "Lüku"];
 const boardColumns = ["Backlog", "In Progress", "Done"];
 const workStatuses = ["backlog", "in_progress", "done"];
+const migrateBoardStatus = (status) => {
+  if (status === "review") {
+    return "in_progress";
+  }
+  return workStatuses.includes(status) ? status : "backlog";
+};
 
 const boardColumnToStatus = {
   Backlog: "backlog",
@@ -175,13 +181,15 @@ const normalizeWorkItem = (item, fallbackKind = "todo") => ({
   kind: ["task", "todo", "board"].includes(item?.kind) ? item.kind : fallbackKind,
   title: typeof item?.title === "string" ? item.title : "",
   owner: typeof item?.owner === "string" ? item.owner : typeof item?.person === "string" ? item.person : workPeople[0],
-  status: workStatuses.includes(item?.status)
-    ? item.status
+  status: migrateBoardStatus(
+    typeof item?.status === "string"
+      ? item.status
     : typeof item?.column === "string"
       ? boardColumnToStatus[item.column] || "backlog"
       : item?.done
         ? "done"
         : "backlog",
+  ),
   priority: typeof item?.priority === "string" || typeof item?.priority === "number" ? item.priority : "P2",
   due_date: typeof item?.due_date === "string" ? item.due_date : typeof item?.end_date === "string" ? item.end_date : "",
   estimate_hours: Number(item?.estimate_hours || 0) || 0,
@@ -1090,7 +1098,8 @@ export default function App() {
         if (task.id !== taskId) {
           return task;
         }
-        const index = boardColumns.indexOf(statusToBoardColumn[task.status] || "Backlog");
+        const normalizedStatus = migrateBoardStatus(task.status);
+        const index = boardColumns.indexOf(statusToBoardColumn[normalizedStatus] || "Backlog");
         const next = Math.min(boardColumns.length - 1, Math.max(0, index + direction));
         return { ...task, status: boardColumnToStatus[boardColumns[next]], updated_at: new Date().toISOString() };
       }),
@@ -1789,8 +1798,8 @@ export default function App() {
 
             <section className="card">
               <header>
-                <p className="eyebrow">Jira-style board</p>
-                <h2>Simple task board</h2>
+                <p className="eyebrow">Simple workflow board</p>
+                <h2>Three-step task board</h2>
               </header>
               <form className="form" onSubmit={handleAddBoardTask}>
                 <div className="inline-grid four-col">
