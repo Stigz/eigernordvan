@@ -22,9 +22,9 @@ import (
 )
 
 type tripRequest struct {
-	UserName string  `json:"user_name"`
-	StartKM  float64 `json:"start_km"`
-	EndKM    float64 `json:"end_km"`
+	UserName string   `json:"user_name"`
+	StartKM  *float64 `json:"start_km,omitempty"`
+	EndKM    *float64 `json:"end_km,omitempty"`
 }
 
 type tripResponse struct {
@@ -34,6 +34,13 @@ type tripResponse struct {
 	EventType    string  `json:"event_type"`
 	LoggedAtUTC  string  `json:"timestamp"`
 	Confirmation string  `json:"confirmation"`
+}
+
+type openTripResponse struct {
+	ID        string  `json:"id"`
+	Timestamp string  `json:"timestamp"`
+	UserName  string  `json:"user_name"`
+	StartKM   float64 `json:"start_km"`
 }
 
 type tripRecord struct {
@@ -201,6 +208,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/trips" {
 			return h.handleListTrips(ctx)
 		}
+		if path == "/trip/open" {
+			return h.handleGetOpenTrip(ctx)
+		}
 		if path == "/fuel" {
 			return h.handleListFuel(ctx)
 		}
@@ -306,42 +316,91 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 		return h.respondError(http.StatusBadRequest, "invalid json payload"), nil
 	}
 
-	if err := validateTrip(payload); err != nil {
+	if err := validateTripCreatePayload(payload); err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
-
-	trips, err := h.listTrips(ctx)
-	if err != nil {
-		log.Printf("scan failed: %v", err)
-		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
-	}
-	if err := validateTripWithHistory(payload, trips, ""); err != nil {
-		return h.respondError(http.StatusBadRequest, err.Error()), nil
-	}
-
-	deltaKM := payload.EndKM - payload.StartKM
-	tripCost := deltaKM * 0.50
 
 	now := time.Now().UTC()
-	itemID := uuid.NewString()
+	openTrip, err := h.getLatestOpenTrip(ctx)
+	if err != nil {
+		log.Printf("fetch open trip failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
+	}
 
+	if payload.StartKM != nil && payload.EndKM == nil {
+		if openTrip != nil {
+			return h.respondError(http.StatusBadRequest, "an open trip already exists; submit an end_km to close it first"), nil
+		}
+		itemID := uuid.NewString()
+		item := map[string]types.AttributeValue{
+			"id":             &types.AttributeValueMemberS{Value: itemID},
+			"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+			"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
+			"start_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", *payload.StartKM)},
+			"event_type":     &types.AttributeValueMemberS{Value: "trip_manual_open"},
+			"ledger_comment": &types.AttributeValueMemberS{Value: "Trip start logged. Add end odometer later to close."},
+		}
+		if _, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{TableName: &h.tableName, Item: item}); err != nil {
+			log.Printf("put open trip failed: %v", err)
+			return h.respondError(http.StatusInternalServerError, "failed to store trip"), nil
+		}
+		return h.respond(http.StatusOK, map[string]any{
+			"id":            itemID,
+			"event_type":    "trip_manual_open",
+			"timestamp":     now.Format(time.RFC3339),
+			"confirmation":  "Trip start logged. Add end odometer when you finish driving.",
+			"is_open":       true,
+			"start_km":      *payload.StartKM,
+			"user_name":     payload.UserName,
+			"trip_cost_chf": 0.0,
+			"delta_km":      0.0,
+		}), nil
+	}
+
+	startKM := 0.0
+	userName := payload.UserName
+	if payload.StartKM != nil {
+		startKM = *payload.StartKM
+	}
+	if payload.StartKM == nil && payload.EndKM != nil {
+		if openTrip == nil {
+			return h.respondError(http.StatusBadRequest, "no open trip found; submit start_km first"), nil
+		}
+		startKM = openTrip.StartKM
+		if strings.TrimSpace(userName) == "" {
+			userName = openTrip.UserName
+		}
+		if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+			TableName: &h.tableName,
+			Key: map[string]types.AttributeValue{
+				"id": &types.AttributeValueMemberS{Value: openTrip.ID},
+			},
+		}); err != nil {
+			log.Printf("delete open trip failed: %v", err)
+			return h.respondError(http.StatusInternalServerError, "failed to store trip"), nil
+		}
+	}
+
+	endKM := *payload.EndKM
+	if endKM <= startKM {
+		return h.respondError(http.StatusBadRequest, "end_km must be greater than start_km"), nil
+	}
+
+	deltaKM := endKM - startKM
+	tripCost := deltaKM * 0.50
+	itemID := uuid.NewString()
 	item := map[string]types.AttributeValue{
 		"id":             &types.AttributeValueMemberS{Value: itemID},
 		"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
-		"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
-		"start_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.StartKM)},
-		"end_km":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.EndKM)},
+		"user_name":      &types.AttributeValueMemberS{Value: userName},
+		"start_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", startKM)},
+		"end_km":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", endKM)},
 		"delta_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", deltaKM)},
 		"trip_cost_chf":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", tripCost)},
 		"event_type":     &types.AttributeValueMemberS{Value: "trip_manual"},
 		"ledger_comment": &types.AttributeValueMemberS{Value: "Append-only MVP entry. Corrections are new events."},
 	}
-
-	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &h.tableName,
-		Item:      item,
-	})
-	if err != nil {
+	if _, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{TableName: &h.tableName, Item: item}); err != nil {
 		log.Printf("put item failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to store trip"), nil
 	}
@@ -356,6 +415,25 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 	}
 
 	return h.respond(http.StatusOK, response), nil
+}
+
+func (h *handler) handleGetOpenTrip(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
+	openTrip, err := h.getLatestOpenTrip(ctx)
+	if err != nil {
+		log.Printf("scan failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch open trip"), nil
+	}
+	if openTrip == nil {
+		return h.respond(http.StatusOK, map[string]any{"item": nil}), nil
+	}
+	return h.respond(http.StatusOK, map[string]any{
+		"item": openTripResponse{
+			ID:        openTrip.ID,
+			Timestamp: openTrip.Timestamp,
+			UserName:  openTrip.UserName,
+			StartKM:   openTrip.StartKM,
+		},
+	}), nil
 }
 
 func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -443,7 +521,7 @@ func (h *handler) handleUpdateTrip(ctx context.Context, request events.APIGatewa
 		return h.respondError(http.StatusBadRequest, "invalid json payload"), nil
 	}
 
-	if err := validateTrip(payload); err != nil {
+	if err := validateTripUpdatePayload(payload); err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
@@ -452,20 +530,20 @@ func (h *handler) handleUpdateTrip(ctx context.Context, request events.APIGatewa
 		log.Printf("scan failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
 	}
-	if err := validateTripUpdate(payload, trips, id); err != nil {
+	if err := validateTripUpdate(*payload.StartKM, *payload.EndKM, trips, id); err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
 	now := time.Now().UTC()
-	deltaKM := payload.EndKM - payload.StartKM
+	deltaKM := *payload.EndKM - *payload.StartKM
 	tripCost := deltaKM * 0.50
 
 	item := map[string]types.AttributeValue{
 		"id":             &types.AttributeValueMemberS{Value: id},
 		"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
 		"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
-		"start_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.StartKM)},
-		"end_km":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.EndKM)},
+		"start_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", *payload.StartKM)},
+		"end_km":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", *payload.EndKM)},
 		"delta_km":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", deltaKM)},
 		"trip_cost_chf":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", tripCost)},
 		"event_type":     &types.AttributeValueMemberS{Value: "trip_manual_updated"},
@@ -1323,11 +1401,36 @@ func (r eventRecord) asFuel() (fuelRecord, bool) {
 	}, true
 }
 
-func validateTrip(payload tripRequest) error {
-	if payload.UserName == "" {
+func validateTripCreatePayload(payload tripRequest) error {
+	if strings.TrimSpace(payload.UserName) == "" {
 		return errors.New("user_name is required")
 	}
-	if payload.EndKM <= payload.StartKM {
+	if payload.StartKM == nil && payload.EndKM == nil {
+		return errors.New("provide at least one of start_km or end_km")
+	}
+	if payload.StartKM != nil && *payload.StartKM < 0 {
+		return errors.New("start_km must be greater than or equal to 0")
+	}
+	if payload.EndKM != nil && *payload.EndKM < 0 {
+		return errors.New("end_km must be greater than or equal to 0")
+	}
+	if payload.StartKM != nil && payload.EndKM != nil && *payload.EndKM <= *payload.StartKM {
+		return errors.New("end_km must be greater than start_km")
+	}
+	return nil
+}
+
+func validateTripUpdatePayload(payload tripRequest) error {
+	if strings.TrimSpace(payload.UserName) == "" {
+		return errors.New("user_name is required")
+	}
+	if payload.StartKM == nil || payload.EndKM == nil {
+		return errors.New("both start_km and end_km are required when editing")
+	}
+	if *payload.StartKM < 0 {
+		return errors.New("start_km must be greater than or equal to 0")
+	}
+	if *payload.EndKM <= *payload.StartKM {
 		return errors.New("end_km must be greater than start_km")
 	}
 	return nil
@@ -1349,26 +1452,7 @@ func validateFuel(payload fuelRequest) error {
 	return nil
 }
 
-func validateTripWithHistory(payload tripRequest, trips []tripRecord, currentID string) error {
-	if len(trips) == 0 {
-		return nil
-	}
-
-	latestEnd := trips[0].EndKM
-	for _, trip := range trips[1:] {
-		if trip.EndKM > latestEnd {
-			latestEnd = trip.EndKM
-		}
-	}
-
-	if payload.StartKM != latestEnd {
-		return fmt.Errorf("start_km must match latest recorded end odometer (%.1f)", latestEnd)
-	}
-
-	return nil
-}
-
-func validateTripUpdate(payload tripRequest, trips []tripRecord, currentID string) error {
+func validateTripUpdate(startKM float64, endKM float64, trips []tripRecord, currentID string) error {
 	if currentID == "" {
 		return errors.New("trip id is required")
 	}
@@ -1377,12 +1461,36 @@ func validateTripUpdate(payload tripRequest, trips []tripRecord, currentID strin
 		if trip.ID == currentID {
 			continue
 		}
-		if payload.StartKM < trip.EndKM && payload.EndKM > trip.StartKM {
-			return fmt.Errorf("edited range %.1f-%.1f overlaps existing trip %.1f-%.1f", payload.StartKM, payload.EndKM, trip.StartKM, trip.EndKM)
+		if startKM < trip.EndKM && endKM > trip.StartKM {
+			return fmt.Errorf("edited range %.1f-%.1f overlaps existing trip %.1f-%.1f", startKM, endKM, trip.StartKM, trip.EndKM)
 		}
 	}
 
 	return nil
+}
+
+func (h *handler) getLatestOpenTrip(ctx context.Context) (*tripRecord, error) {
+	events, err := h.listEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var latest *tripRecord
+	for _, event := range events {
+		if event.EventType != "trip_manual_open" || event.StartKM == nil || event.EndKM != nil {
+			continue
+		}
+		candidate := &tripRecord{
+			ID:        event.ID,
+			Timestamp: event.Timestamp,
+			UserName:  event.UserName,
+			StartKM:   *event.StartKM,
+		}
+		if latest == nil || candidate.Timestamp > latest.Timestamp {
+			latest = candidate
+		}
+	}
+	return latest, nil
 }
 
 func (h *handler) respondError(status int, message string) events.APIGatewayV2HTTPResponse {

@@ -21,6 +21,18 @@ const initialForm = {
   end_km: "",
 };
 
+const parseOptionalNumberInput = (value) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 const initialGasForm = {
   user_name: "",
   liters: "",
@@ -552,6 +564,7 @@ export default function App() {
   const [profiles, setProfiles] = useState(() => parseProfiles());
   const [editId, setEditId] = useState("");
   const [tableState, setTableState] = useState({ state: "loading", message: "Loading entries..." });
+  const [openTrip, setOpenTrip] = useState(null);
   const [gasForm, setGasForm] = useState(initialGasForm);
   const [gasStatus, setGasStatus] = useState({ state: "idle", message: "" });
   const [gasEntries, setGasEntries] = useState(() => parseFuelEntries());
@@ -595,6 +608,31 @@ export default function App() {
       }),
     [trips],
   );
+
+  const tableRows = useMemo(() => {
+    const ascending = [...trips].sort((a, b) => {
+      if (a.start_km === b.start_km) {
+        return new Date(a.timestamp) - new Date(b.timestamp);
+      }
+      return a.start_km - b.start_km;
+    });
+
+    const rows = [];
+    ascending.forEach((trip, index) => {
+      rows.push({ type: "trip", trip });
+      const next = ascending[index + 1];
+      if (next && next.start_km > trip.end_km) {
+        rows.push({
+          type: "gap",
+          id: `${trip.id}-${next.id}`,
+          start_km: trip.end_km,
+          end_km: next.start_km,
+        });
+      }
+    });
+
+    return rows;
+  }, [trips]);
 
   const sortedGasEntries = useMemo(
     () =>
@@ -963,6 +1001,22 @@ export default function App() {
     }
   };
 
+  const loadOpenTrip = async () => {
+    if (!apiBaseUrl) {
+      return;
+    }
+    try {
+      const response = await fetch(`${apiBaseUrl}/trip/open`);
+      const payload = await response.json();
+      if (!response.ok) {
+        return;
+      }
+      setOpenTrip(payload.item || null);
+    } catch (_error) {
+      setOpenTrip(null);
+    }
+  };
+
   const loadBookings = async (from, to) => {
     if (!apiBaseUrl) {
       setBookingTableState({
@@ -993,6 +1047,7 @@ export default function App() {
 
   useEffect(() => {
     loadTrips();
+    loadOpenTrip();
   }, []);
 
   useEffect(() => {
@@ -1000,10 +1055,21 @@ export default function App() {
   }, [bookingDateRange.from, bookingDateRange.to]);
 
   useEffect(() => {
-    if (!editId && latestEndKm !== null) {
-      setForm((prev) => ({ ...prev, start_km: String(latestEndKm.toFixed(1)) }));
+    if (editId) {
+      return;
     }
-  }, [latestEndKm, editId]);
+    if (openTrip) {
+      setForm((prev) => ({
+        ...prev,
+        user_name: prev.user_name || openTrip.user_name || "",
+        start_km: String(openTrip.start_km.toFixed(1)),
+      }));
+      return;
+    }
+    if (latestEndKm !== null) {
+      setForm((prev) => ({ ...prev, start_km: prev.start_km || String(latestEndKm.toFixed(1)) }));
+    }
+  }, [latestEndKm, editId, openTrip]);
 
   useEffect(() => {
     const fromTrips = [...new Set(trips.map((trip) => trip.user_name).filter(Boolean))];
@@ -1219,6 +1285,8 @@ export default function App() {
       const isEditing = Boolean(editId);
       const targetUrl = isEditing ? `${apiBaseUrl}/trip/${editId}` : `${apiBaseUrl}/trip`;
 
+      const startKm = parseOptionalNumberInput(form.start_km);
+      const endKm = parseOptionalNumberInput(form.end_km);
       const response = await fetch(targetUrl, {
         method: isEditing ? "PUT" : "POST",
         headers: {
@@ -1226,8 +1294,8 @@ export default function App() {
         },
         body: JSON.stringify({
           user_name: form.user_name.trim(),
-          start_km: Number(form.start_km),
-          end_km: Number(form.end_km),
+          ...(startKm !== null ? { start_km: startKm } : {}),
+          ...(endKm !== null ? { end_km: endKm } : {}),
         }),
       });
 
@@ -1239,13 +1307,15 @@ export default function App() {
       }
 
       upsertProfile(form.user_name);
-      setStatus({
-        state: "success",
-        message: `Saved. Distance: ${payload.delta_km.toFixed(1)} km · Cost: CHF ${payload.trip_cost_chf.toFixed(2)}`,
-      });
+      const isOpenTrip = payload.is_open || payload.event_type === "trip_manual_open";
+      const message = isOpenTrip
+        ? "Trip start saved. Add an end odometer later to close it."
+        : `Saved. Distance: ${payload.delta_km.toFixed(1)} km · Cost: CHF ${payload.trip_cost_chf.toFixed(2)}`;
+      setStatus({ state: "success", message });
       setEditId("");
       setForm((prev) => ({ ...initialForm, user_name: prev.user_name }));
       await loadTrips();
+      await loadOpenTrip();
     } catch (_error) {
       setStatus({ state: "error", message: "Network error. Please try again." });
     }
@@ -1653,7 +1723,6 @@ export default function App() {
                     placeholder="12345"
                     value={form.start_km}
                     onChange={handleChange}
-                    required
                   />
                 </label>
 
@@ -1668,7 +1737,6 @@ export default function App() {
                     placeholder="12399"
                     value={form.end_km}
                     onChange={handleChange}
-                    required
                   />
                 </label>
 
@@ -1717,44 +1785,52 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {tableTrips.length === 0 ? (
+                      {tableRows.length === 0 ? (
                         <tr>
                           <td colSpan="8" className="empty-cell">
                             {tableState.state === "loading" ? "Loading..." : "No entries yet."}
                           </td>
                         </tr>
                       ) : (
-                        tableTrips.map((trip) => (
-                          <tr key={trip.id}>
-                            <td>{new Date(trip.timestamp).toLocaleString()}</td>
-                            <td>{trip.user_name}</td>
-                            <td>{trip.start_km.toFixed(1)}</td>
-                            <td>{trip.end_km.toFixed(1)}</td>
-                            <td>{trip.delta_km.toFixed(1)}</td>
-                            <td>{trip.trip_cost_chf.toFixed(2)}</td>
-                            <td>
-                              {conflictMap.get(trip.id)?.length ? (
-                                <ul className="conflict-list">
-                                  {conflictMap.get(trip.id).map((conflict) => (
-                                    <li key={conflict}>{conflict}</li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <span className="conflict-ok">OK</span>
-                              )}
-                            </td>
-                            <td>
-                              <div className="row-actions">
-                                <button type="button" className="table-btn" onClick={() => handleEdit(trip)}>
-                                  Edit
-                                </button>
-                                <button type="button" className="table-btn danger" onClick={() => handleDelete(trip)}>
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))
+                        tableRows.map((row) =>
+                          row.type === "gap" ? (
+                            <tr key={row.id}>
+                              <td colSpan="8">
+                                <strong>Fill usage history gap:</strong> {row.start_km.toFixed(1)} → {row.end_km.toFixed(1)} km
+                              </td>
+                            </tr>
+                          ) : (
+                            <tr key={row.trip.id}>
+                              <td>{new Date(row.trip.timestamp).toLocaleString()}</td>
+                              <td>{row.trip.user_name}</td>
+                              <td>{row.trip.start_km.toFixed(1)}</td>
+                              <td>{row.trip.end_km.toFixed(1)}</td>
+                              <td>{row.trip.delta_km.toFixed(1)}</td>
+                              <td>{row.trip.trip_cost_chf.toFixed(2)}</td>
+                              <td>
+                                {conflictMap.get(row.trip.id)?.length ? (
+                                  <ul className="conflict-list">
+                                    {conflictMap.get(row.trip.id).map((conflict) => (
+                                      <li key={conflict}>{conflict}</li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <span className="conflict-ok">OK</span>
+                                )}
+                              </td>
+                              <td>
+                                <div className="row-actions">
+                                  <button type="button" className="table-btn" onClick={() => handleEdit(row.trip)}>
+                                    Edit
+                                  </button>
+                                  <button type="button" className="table-btn danger" onClick={() => handleDelete(row.trip)}>
+                                    Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ),
+                        )
                       )}
                     </tbody>
                   </table>
