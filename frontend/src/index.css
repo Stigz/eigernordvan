@@ -695,3 +695,88 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+.accounting-card {
+  gap: 24px;
+}
+
+.how-it-works h3 {
+  margin: 0;
+}
+
+.formula-box {
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+  color: #1e3a8a;
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  font-size: 13px;
+}
+
+.formula-box p {
+  margin: 0;
+}
+
+.accounting-totals-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.toggle-field {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.toggle-field input {
+  width: 22px;
+  height: 22px;
+}
+
+.accounting-results-table tr.formula-row td {
+  background: #f8fafc;
+  white-space: normal;
+}
+
+.formula-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: #334155;
+}
+
+.stacked-track {
+  width: 100%;
+  display: flex;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e2e8f0;
+}
+
+.stacked-part.work {
+  background: linear-gradient(90deg, #4ade80, #16a34a);
+}
+
+.stacked-part.money {
+  background: linear-gradient(90deg, #38bdf8, #0284c7);
+}
+
+.stacked-part.base {
+  background: linear-gradient(90deg, #a5b4fc, #6366f1);
+}
+
+.metric-fill.cost {
+  background: linear-gradient(90deg, #94a3b8, #475569);
+}
+
+.chart-bar.usage-share {
+  background: linear-gradient(90deg, #60a5fa, #2563eb);
+}
+
+.chart-bar.cost-share {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}

@@ -367,7 +367,7 @@ const buildEfficiencyLinePath = (points, width, height, padding) => {
 };
 
 const accountingDemoPeople = [
-  { id: crypto.randomUUID(), name: "Nic", km_used: 3200, nights_used: 18, work_hours: 42, money_paid: 1200 },
+  { id: crypto.randomUUID(), name: "Nic", km_used: 3200, nights_used: 18, work_hours: 42, money_paid: 2000 },
   { id: crypto.randomUUID(), name: "Kayla", km_used: 2100, nights_used: 12, work_hours: 26, money_paid: 600 },
   { id: crypto.randomUUID(), name: "Luk", km_used: 1450, nights_used: 9, work_hours: 14, money_paid: 350 },
   { id: crypto.randomUUID(), name: "Jeanne", km_used: 1850, nights_used: 11, work_hours: 20, money_paid: 500 },
@@ -378,6 +378,8 @@ const accountingInitialSettings = {
   night_rate_chf: 24,
   work_hour_rate_chf: 38,
   annual_fixed_costs_chf: 8000,
+  monthly_base_payment_chf: 50,
+  include_base_payment_in_contribution: true,
 };
 
 const toAccountingNumber = (value) => {
@@ -386,55 +388,79 @@ const toAccountingNumber = (value) => {
 };
 
 const accountingRound2 = (value) => Math.round(value * 100) / 100;
+const formatChf = (value) => `${toAccountingNumber(value).toFixed(2)} CHF`;
+const formatPercent = (value) => `${toAccountingNumber(value).toFixed(1)}%`;
 
 const VanAccountingSandbox = () => {
   const [people, setPeople] = useState(accountingDemoPeople);
   const [settings, setSettings] = useState(accountingInitialSettings);
+  const [displayMode, setDisplayMode] = useState("formula");
 
   const totals = useMemo(() => {
+    const totalKm = people.reduce((sum, person) => sum + toAccountingNumber(person.km_used), 0);
+    const totalNights = people.reduce((sum, person) => sum + toAccountingNumber(person.nights_used), 0);
     const usageValues = people.map(
       (person) => toAccountingNumber(person.km_used) * toAccountingNumber(settings.km_rate_chf) + toAccountingNumber(person.nights_used) * toAccountingNumber(settings.night_rate_chf),
     );
     const workValues = people.map((person) => toAccountingNumber(person.work_hours) * toAccountingNumber(settings.work_hour_rate_chf));
     const moneyPaidValues = people.map((person) => toAccountingNumber(person.money_paid));
-    const sumUsageValue = usageValues.reduce((acc, value) => acc + value, 0);
-    const contributions = people.map((person, index) => moneyPaidValues[index] + workValues[index]);
-    return { usageValues, workValues, moneyPaidValues, sumUsageValue, contributions };
+    const basePaymentYearlyPerPerson = people.map(() => toAccountingNumber(settings.monthly_base_payment_chf) * 12);
+    const totalUsageValue = usageValues.reduce((sum, value) => sum + value, 0);
+    const totalWorkValue = workValues.reduce((sum, value) => sum + value, 0);
+    const totalMoneyPaid = moneyPaidValues.reduce((sum, value) => sum + value, 0);
+    const totalBasePayments = basePaymentYearlyPerPerson.reduce((sum, value) => sum + value, 0);
+
+    return {
+      totalKm,
+      totalNights,
+      usageValues,
+      workValues,
+      moneyPaidValues,
+      basePaymentYearlyPerPerson,
+      totalUsageValue,
+      totalWorkValue,
+      totalMoneyPaid,
+      totalBasePayments,
+    };
   }, [people, settings]);
 
   const results = useMemo(
     () =>
       people.map((person, index) => {
+        const km = toAccountingNumber(person.km_used);
+        const nights = toAccountingNumber(person.nights_used);
+        const work_hours = toAccountingNumber(person.work_hours);
         const usage_value = totals.usageValues[index];
         const work_value = totals.workValues[index];
         const money_paid = totals.moneyPaidValues[index];
-        const contribution_value = totals.contributions[index];
-        const cost_share =
-          totals.sumUsageValue > 0
-            ? toAccountingNumber(settings.annual_fixed_costs_chf) * (usage_value / totals.sumUsageValue)
-            : 0;
-        const net_balance = contribution_value - usage_value - cost_share;
+        const base_payment_yearly = totals.basePaymentYearlyPerPerson[index];
+        const contribution_value =
+          work_value +
+          money_paid +
+          (settings.include_base_payment_in_contribution ? base_payment_yearly : 0);
+        const usage_share = totals.totalUsageValue > 0 ? usage_value / totals.totalUsageValue : 0;
+        const cost_share = toAccountingNumber(settings.annual_fixed_costs_chf) * usage_share;
+        const net_balance = contribution_value - cost_share;
 
         return {
           id: person.id,
           name: person.name,
+          km,
+          nights,
+          work_hours,
           usage_value: accountingRound2(usage_value),
           work_value: accountingRound2(work_value),
           money_paid: accountingRound2(money_paid),
+          base_payment_yearly: accountingRound2(base_payment_yearly),
           contribution_value: accountingRound2(contribution_value),
+          usage_share,
+          usage_share_pct: accountingRound2(usage_share * 100),
           cost_share: accountingRound2(cost_share),
           net_balance: accountingRound2(net_balance),
         };
       }),
     [people, settings, totals],
   );
-
-  const visualScale = useMemo(() => {
-    const maxUsage = Math.max(1, ...results.map((result) => result.usage_value));
-    const maxMoney = Math.max(1, ...results.map((result) => result.money_paid));
-    const maxWork = Math.max(1, ...results.map((result) => result.work_value));
-    return { maxUsage, maxMoney, maxWork };
-  }, [results]);
 
   const setPersonValue = (id, field, value) => {
     setPeople((current) => current.map((person) => (person.id === id ? { ...person, [field]: value } : person)));
@@ -447,23 +473,58 @@ const VanAccountingSandbox = () => {
     ]);
   };
 
+  const annualSharedCosts = toAccountingNumber(settings.annual_fixed_costs_chf);
+  const totalContributions = results.reduce((sum, result) => sum + result.contribution_value, 0);
+  const totalCostShares = results.reduce((sum, result) => sum + result.cost_share, 0);
+  const contributionMinusCost = accountingRound2(totalContributions - totalCostShares);
+  const contributionScaleMax = Math.max(1, ...results.map((result) => result.contribution_value));
+  const costShareScaleMax = Math.max(1, ...results.map((result) => result.cost_share));
+
   return (
-    <section className="card">
+    <section className="card accounting-card">
       <header>
         <p className="eyebrow">Accounting sandbox</p>
         <h2>Future Van Accounting Simulator</h2>
-        <p className="subtitle">Edit values below to test fairness models. Calculations update instantly.</p>
+        <p className="subtitle">Prototype for future annual accounting only (historical accounting not included).</p>
       </header>
+
+      <section className="how-it-works">
+        <h3>How it works</h3>
+        <p className="subtitle">
+          This simulator estimates future annual fairness. Use creates a share of annual costs. Work and direct payments count as contribution.
+          Net balance shows whether someone contributed more or less than their calculated burden.
+        </p>
+        <div className="formula-box">
+          <p>usage_value = km × km_rate + nights × night_rate</p>
+          <p>work_value = hours × work_hour_rate</p>
+          <p>cost_share = annual_shared_costs × usage_value / total_usage_value</p>
+          <p>net_balance = contribution_value - cost_share</p>
+        </div>
+        <div className="summary-grid accounting-totals-grid">
+          <article className="summary-card"><p className="summary-label">Total KM</p><p className="summary-value">{totals.totalKm.toFixed(0)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total nights</p><p className="summary-value">{totals.totalNights.toFixed(0)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total use value</p><p className="summary-value">{formatChf(totals.totalUsageValue)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total work credit</p><p className="summary-value">{formatChf(totals.totalWorkValue)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total direct payments this year</p><p className="summary-value">{formatChf(totals.totalMoneyPaid)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total annual base payments</p><p className="summary-value">{formatChf(totals.totalBasePayments)}</p></article>
+          <article className="summary-card"><p className="summary-label">Annual shared costs</p><p className="summary-value">{formatChf(annualSharedCosts)}</p></article>
+        </div>
+      </section>
+
+      <div className="view-switcher">
+        <button type="button" className={`segment-btn ${displayMode === "simple" ? "active" : ""}`} onClick={() => setDisplayMode("simple")}>Simple view</button>
+        <button type="button" className={`segment-btn ${displayMode === "formula" ? "active" : ""}`} onClick={() => setDisplayMode("formula")}>Formula view</button>
+      </div>
 
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Name</th>
-              <th>km_used</th>
-              <th>nights_used</th>
-              <th>work_hours</th>
-              <th>money_paid</th>
+              <th>KM</th>
+              <th>Nights</th>
+              <th>Work hours</th>
+              <th>Direct payments this year</th>
               <th />
             </tr>
           </thead>
@@ -488,77 +549,140 @@ const VanAccountingSandbox = () => {
       <button className="submit" type="button" onClick={addPerson}>Add person</button>
 
       <div className="summary-grid accounting-settings-grid">
-        <label className="field"><span>km_rate_chf</span><input type="number" step="0.01" value={settings.km_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, km_rate_chf: event.target.value }))} /></label>
-        <label className="field"><span>night_rate_chf</span><input type="number" step="0.01" value={settings.night_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, night_rate_chf: event.target.value }))} /></label>
-        <label className="field"><span>work_hour_rate_chf</span><input type="number" step="0.01" value={settings.work_hour_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, work_hour_rate_chf: event.target.value }))} /></label>
-        <label className="field"><span>annual_fixed_costs_chf</span><input type="number" step="0.01" value={settings.annual_fixed_costs_chf} onChange={(event) => setSettings((current) => ({ ...current, annual_fixed_costs_chf: event.target.value }))} /></label>
+        <label className="field"><span>KM rate (CHF)</span><input type="number" step="0.01" value={settings.km_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, km_rate_chf: event.target.value }))} /></label>
+        <label className="field"><span>Night rate (CHF)</span><input type="number" step="0.01" value={settings.night_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, night_rate_chf: event.target.value }))} /></label>
+        <label className="field"><span>Work hour rate (CHF)</span><input type="number" step="0.01" value={settings.work_hour_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, work_hour_rate_chf: event.target.value }))} /></label>
+        <label className="field"><span>Annual shared costs</span><input type="number" step="0.01" value={settings.annual_fixed_costs_chf} onChange={(event) => setSettings((current) => ({ ...current, annual_fixed_costs_chf: event.target.value }))} /></label>
+        <label className="field"><span>Monthly base payment</span><input type="number" step="0.01" value={settings.monthly_base_payment_chf} onChange={(event) => setSettings((current) => ({ ...current, monthly_base_payment_chf: event.target.value }))} /></label>
+        <label className="field toggle-field">
+          <span>Include base payment in total contribution</span>
+          <input type="checkbox" checked={settings.include_base_payment_in_contribution} onChange={(event) => setSettings((current) => ({ ...current, include_base_payment_in_contribution: event.target.checked }))} />
+        </label>
       </div>
 
       <div className="table-wrap">
-        <table>
+        <table className="accounting-results-table">
           <thead>
             <tr>
-              <th>Name</th><th>usage_value</th><th>work_value</th><th>money_paid</th><th>contribution_value</th><th>cost_share</th><th>net_balance</th>
+              <th>Name</th>
+              <th>KM</th>
+              <th>Nights</th>
+              <th>Use value</th>
+              <th>Work hours</th>
+              <th>Work credit</th>
+              <th>Direct payments this year</th>
+              <th>Base payments yearly</th>
+              <th>Total contribution</th>
+              <th>Usage share %</th>
+              <th>Share of annual costs</th>
+              <th>Annual balance</th>
             </tr>
           </thead>
           <tbody>
             {results.map((result) => (
-              <tr key={result.id}>
-                <td>{result.name || "(unnamed)"}</td>
-                <td>{result.usage_value.toFixed(2)}</td>
-                <td>{result.work_value.toFixed(2)}</td>
-                <td>{result.money_paid.toFixed(2)}</td>
-                <td>{result.contribution_value.toFixed(2)}</td>
-                <td>{result.cost_share.toFixed(2)}</td>
-                <td className={result.net_balance >= 0 ? "balance-positive" : "balance-negative"}>{result.net_balance.toFixed(2)}</td>
-              </tr>
+              <Fragment key={result.id}>
+                <tr>
+                  <td>{result.name || "(unnamed)"}</td>
+                  <td>{result.km.toFixed(0)}</td>
+                  <td>{result.nights.toFixed(0)}</td>
+                  <td>{formatChf(result.usage_value)}</td>
+                  <td>{result.work_hours.toFixed(1)}</td>
+                  <td>{formatChf(result.work_value)}</td>
+                  <td>{formatChf(result.money_paid)}</td>
+                  <td>{formatChf(result.base_payment_yearly)}</td>
+                  <td>{formatChf(result.contribution_value)}</td>
+                  <td>{formatPercent(result.usage_share_pct)}</td>
+                  <td>{formatChf(result.cost_share)}</td>
+                  <td className={result.net_balance >= 0 ? "balance-positive" : "balance-negative"}>{formatChf(result.net_balance)}</td>
+                </tr>
+                {displayMode === "formula" && (
+                  <tr className="formula-row">
+                    <td colSpan="12">
+                      <details>
+                        <summary>{result.name || "(unnamed)"} calculation details</summary>
+                        <ul className="formula-list">
+                          <li>usage_value = {result.km.toFixed(0)} × {toAccountingNumber(settings.km_rate_chf).toFixed(2)} + {result.nights.toFixed(0)} × {toAccountingNumber(settings.night_rate_chf).toFixed(2)} = {result.usage_value.toFixed(2)}</li>
+                          <li>work_value = {result.work_hours.toFixed(1)} × {toAccountingNumber(settings.work_hour_rate_chf).toFixed(2)} = {result.work_value.toFixed(2)}</li>
+                          <li>base_payment_yearly = {toAccountingNumber(settings.monthly_base_payment_chf).toFixed(2)} × 12 = {result.base_payment_yearly.toFixed(2)}</li>
+                          <li>contribution_value = {result.work_value.toFixed(2)} + {result.money_paid.toFixed(2)} + {settings.include_base_payment_in_contribution ? result.base_payment_yearly.toFixed(2) : "0.00"} = {result.contribution_value.toFixed(2)}</li>
+                          <li>usage_share = {result.usage_value.toFixed(2)} / {totals.totalUsageValue.toFixed(2)} = {formatPercent(result.usage_share_pct)}</li>
+                          <li>cost_share = {annualSharedCosts.toFixed(2)} × {formatPercent(result.usage_share_pct)} = {result.cost_share.toFixed(2)}</li>
+                          <li>net_balance = {result.contribution_value.toFixed(2)} - {result.cost_share.toFixed(2)} = {result.net_balance.toFixed(2)}</li>
+                        </ul>
+                      </details>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
           </tbody>
         </table>
       </div>
 
       <section className="accounting-visual">
-        <h3>Contribution vs Usage Snapshot</h3>
-        <p className="subtitle">Quick prototype visual: orange = usage value, blue = money paid, green = work value.</p>
-        <div className="accounting-legend">
-          <span><i className="legend-chip usage" />Usage</span>
-          <span><i className="legend-chip money" />Money Paid</span>
-          <span><i className="legend-chip work" />Work Value</span>
-        </div>
+        <h3>Person balance cards</h3>
         <div className="accounting-bars">
+          {results.map((result) => {
+            const workPart = result.contribution_value > 0 ? (result.work_value / result.contribution_value) * 100 : 0;
+            const moneyPart = result.contribution_value > 0 ? (result.money_paid / result.contribution_value) * 100 : 0;
+            const basePart = result.contribution_value > 0 ? ((settings.include_base_payment_in_contribution ? result.base_payment_yearly : 0) / result.contribution_value) * 100 : 0;
+            return (
+              <article key={`viz-${result.id}`} className="accounting-person-card">
+                <header>
+                  <strong>{result.name || "(unnamed)"}</strong>
+                  <span className={result.net_balance >= 0 ? "balance-positive" : "balance-negative"}>{formatChf(result.net_balance)}</span>
+                </header>
+                <div className="stacked-track">
+                  <div className="stacked-part work" style={{ width: `${workPart}%` }} title={`Work credit ${formatChf(result.work_value)}`} />
+                  <div className="stacked-part money" style={{ width: `${moneyPart}%` }} title={`Direct payments ${formatChf(result.money_paid)}`} />
+                  <div className="stacked-part base" style={{ width: `${basePart}%` }} title={`Base payments ${formatChf(settings.include_base_payment_in_contribution ? result.base_payment_yearly : 0)}`} />
+                </div>
+                <div className="metric-row"><label>Total contribution</label><span>{formatChf(result.contribution_value)}</span></div>
+                <div className="metric-track"><div className="metric-fill cost" style={{ width: `${(result.cost_share / costShareScaleMax) * 100}%` }} /></div>
+                <div className="metric-row"><label>Share of annual costs</label><span>{formatChf(result.cost_share)}</span></div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="accounting-visual">
+        <h3>Usage share of total use value</h3>
+        <div className="chart-list">
           {results.map((result) => (
-            <article key={`viz-${result.id}`} className="accounting-person-card">
-              <header>
-                <strong>{result.name || "(unnamed)"}</strong>
-                <span className={result.net_balance >= 0 ? "balance-positive" : "balance-negative"}>
-                  {result.net_balance >= 0 ? "+" : ""}
-                  {result.net_balance.toFixed(2)} CHF
-                </span>
-              </header>
-              <div className="metric-row">
-                <label>Usage</label>
-                <div className="metric-track">
-                  <div className="metric-fill usage" style={{ width: `${(result.usage_value / visualScale.maxUsage) * 100}%` }} />
-                </div>
-                <span>{result.usage_value.toFixed(0)}</span>
-              </div>
-              <div className="metric-row">
-                <label>Money</label>
-                <div className="metric-track">
-                  <div className="metric-fill money" style={{ width: `${(result.money_paid / visualScale.maxMoney) * 100}%` }} />
-                </div>
-                <span>{result.money_paid.toFixed(0)}</span>
-              </div>
-              <div className="metric-row">
-                <label>Work</label>
-                <div className="metric-track">
-                  <div className="metric-fill work" style={{ width: `${(result.work_value / visualScale.maxWork) * 100}%` }} />
-                </div>
-                <span>{result.work_value.toFixed(0)}</span>
-              </div>
-            </article>
+            <div key={`usage-${result.id}`} className="chart-row">
+              <span className="chart-month">{result.name || "(unnamed)"}</span>
+              <div className="chart-track"><div className="chart-bar usage-share" style={{ width: `${result.usage_share * 100}%` }} /></div>
+              <span className="chart-value">{formatPercent(result.usage_share_pct)}</span>
+            </div>
           ))}
         </div>
+      </section>
+
+      <section className="accounting-visual">
+        <h3>Calculated share of annual costs</h3>
+        <div className="chart-list">
+          {results.map((result) => (
+            <div key={`cost-${result.id}`} className="chart-row">
+              <span className="chart-month">{result.name || "(unnamed)"}</span>
+              <div className="chart-track"><div className="chart-bar cost-share" style={{ width: `${(result.cost_share / costShareScaleMax) * 100}%` }} /></div>
+              <span className="chart-value">{formatChf(result.cost_share)}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="accounting-visual">
+        <h3>Annual flow summary</h3>
+        <div className="summary-grid accounting-totals-grid">
+          <article className="summary-card"><p className="summary-label">Annual shared costs</p><p className="summary-value">{formatChf(annualSharedCosts)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total base payments collected</p><p className="summary-value">{formatChf(totals.totalBasePayments)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total direct payments</p><p className="summary-value">{formatChf(totals.totalMoneyPaid)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total work credit</p><p className="summary-value">{formatChf(totals.totalWorkValue)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total use value</p><p className="summary-value">{formatChf(totals.totalUsageValue)}</p></article>
+          <article className="summary-card"><p className="summary-label">Total contribution − total cost shares</p><p className={`summary-value ${contributionMinusCost >= 0 ? "balance-positive" : "balance-negative"}`}>{formatChf(contributionMinusCost)}</p></article>
+        </div>
+        <p className="subtitle">Work credit is a symbolic fairness input, not cash already in the van account.</p>
       </section>
     </section>
   );
