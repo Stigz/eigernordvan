@@ -37,6 +37,20 @@ const initialBookingForm = {
   notes: "",
 };
 
+const initialCostForm = {
+  date: "",
+  type: "expense",
+  amount_chf: "",
+  description: "",
+  category: "general",
+  paid_by: "Nic",
+  participants: ["Nic", "Kayla", "Jeanne", "Lüku"],
+  from_person: "Nic",
+  to_person: "Kayla",
+  notes: "",
+  historical_only: true,
+};
+
 const bookingStatusPriority = {
   open: 0,
   blocked: 1,
@@ -100,6 +114,7 @@ const saveProfiles = (profiles) => {
 const fuelStorageKey = "van_fuel_entries_v1";
 const workStorageKey = "van_work_planner_v1";
 const workPeople = ["Nic", "Kayla", "Jeanne", "Lüku"];
+const costStorageKey = "van_costs_v1";
 const boardColumns = ["Backlog", "In Progress", "Done"];
 const workStatuses = ["backlog", "in_progress", "done"];
 const migrateBoardStatus = (status) => {
@@ -269,6 +284,27 @@ const saveWorkState = (state) => {
         .map((item, index) => ({ ...item, rank: index + 1 }))
     : [];
   localStorage.setItem(workStorageKey, JSON.stringify({ items }));
+};
+
+const parseCostState = () => {
+  if (typeof window === "undefined") {
+    return { entries: [] };
+  }
+  try {
+    const raw = localStorage.getItem(costStorageKey);
+    const parsed = JSON.parse(raw || "{\"entries\":[]}");
+    if (!Array.isArray(parsed?.entries)) {
+      return { entries: [] };
+    }
+    return { entries: parsed.entries };
+  } catch (_error) {
+    return { entries: [] };
+  }
+};
+
+const saveCostState = (state) => {
+  const entries = Array.isArray(state?.entries) ? state.entries : [];
+  localStorage.setItem(costStorageKey, JSON.stringify({ entries }));
 };
 
 const sumTimeEntryHours = (entries) =>
@@ -538,6 +574,10 @@ export default function App() {
   const [workFilters, setWorkFilters] = useState({ owner: "all", status: "all", priority: "all", due: "all" });
   const [workSyncStatus, setWorkSyncStatus] = useState({ state: "idle", message: "" });
   const [isWorkLoaded, setIsWorkLoaded] = useState(false);
+  const [costState, setCostState] = useState(() => parseCostState());
+  const [costForm, setCostForm] = useState(() => ({ ...initialCostForm, date: formatDateISO(new Date()) }));
+  const [costSyncStatus, setCostSyncStatus] = useState({ state: "idle", message: "" });
+  const [isCostLoaded, setIsCostLoaded] = useState(false);
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
   const latestEndKm = useMemo(
@@ -825,6 +865,77 @@ export default function App() {
     [rankedWorkItems, filteredWorkItems],
   );
 
+  const sortedCostEntries = useMemo(
+    () =>
+      [...(costState.entries || [])].sort((a, b) => {
+        if (a.date !== b.date) {
+          return b.date.localeCompare(a.date);
+        }
+        return new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0);
+      }),
+    [costState.entries],
+  );
+
+  const costSummary = useMemo(() => {
+    const balances = Object.fromEntries(workPeople.map((person) => [person, 0]));
+    let totalExpense = 0;
+    let totalIncome = 0;
+    let historicalCount = 0;
+    let settlementCount = 0;
+
+    (costState.entries || []).forEach((entry) => {
+      if (entry.historical_only) {
+        historicalCount += 1;
+      }
+      const amount = Number(entry.amount_chf || 0);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return;
+      }
+      if (entry.type === "expense") {
+        totalExpense += amount;
+        const participants = Array.isArray(entry.participants) && entry.participants.length ? entry.participants : [entry.paid_by];
+        const share = amount / participants.length;
+        participants.forEach((participant) => {
+          if (balances[participant] !== undefined) {
+            balances[participant] -= share;
+          }
+        });
+        if (balances[entry.paid_by] !== undefined) {
+          balances[entry.paid_by] += amount;
+        }
+      } else if (entry.type === "income") {
+        totalIncome += amount;
+        const participants = Array.isArray(entry.participants) && entry.participants.length ? entry.participants : [entry.paid_by];
+        const share = amount / participants.length;
+        participants.forEach((participant) => {
+          if (balances[participant] !== undefined) {
+            balances[participant] += share;
+          }
+        });
+        if (balances[entry.paid_by] !== undefined) {
+          balances[entry.paid_by] -= amount;
+        }
+      } else if (entry.type === "transfer") {
+        settlementCount += 1;
+        if (balances[entry.from_person] !== undefined) {
+          balances[entry.from_person] += amount;
+        }
+        if (balances[entry.to_person] !== undefined) {
+          balances[entry.to_person] -= amount;
+        }
+      }
+    });
+
+    return {
+      totalExpense,
+      totalIncome,
+      netProjectCost: totalExpense - totalIncome,
+      historicalCount,
+      settlementCount,
+      balances,
+    };
+  }, [costState.entries]);
+
   const loadTrips = async () => {
     if (!apiBaseUrl) {
       setTableState({
@@ -919,6 +1030,10 @@ export default function App() {
   }, [workState]);
 
   useEffect(() => {
+    saveCostState(costState);
+  }, [costState]);
+
+  useEffect(() => {
     const loadWorkFromApi = async () => {
       if (!apiBaseUrl) {
         setIsWorkLoaded(true);
@@ -973,6 +1088,60 @@ export default function App() {
     persistWorkToApi();
   }, [apiBaseUrl, isWorkLoaded, workState]);
 
+  useEffect(() => {
+    const loadCostsFromApi = async () => {
+      if (!apiBaseUrl) {
+        setIsCostLoaded(true);
+        return;
+      }
+
+      try {
+        setCostSyncStatus({ state: "loading", message: "Loading cost workspace..." });
+        const response = await fetch(`${apiBaseUrl}/costs`);
+        const payload = await response.json();
+        if (!response.ok) {
+          setCostSyncStatus({ state: "error", message: payload.error || "Could not load cost workspace." });
+          setIsCostLoaded(true);
+          return;
+        }
+        const nextState = { entries: Array.isArray(payload.entries) ? payload.entries : [] };
+        setCostState(nextState);
+        saveCostState(nextState);
+        setCostSyncStatus({ state: "success", message: "Cost workspace synced." });
+      } catch (_error) {
+        setCostSyncStatus({ state: "error", message: "Network error while loading cost workspace." });
+      } finally {
+        setIsCostLoaded(true);
+      }
+    };
+
+    loadCostsFromApi();
+  }, [apiBaseUrl]);
+
+  useEffect(() => {
+    const persistCostToApi = async () => {
+      if (!apiBaseUrl || !isCostLoaded) {
+        return;
+      }
+      try {
+        const response = await fetch(`${apiBaseUrl}/costs`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(costState),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          setCostSyncStatus({ state: "error", message: payload.error || "Could not save cost workspace." });
+          return;
+        }
+        setCostSyncStatus({ state: "success", message: "Cost workspace saved." });
+      } catch (_error) {
+        setCostSyncStatus({ state: "error", message: "Network error while saving cost workspace." });
+      }
+    };
+    persistCostToApi();
+  }, [apiBaseUrl, isCostLoaded, costState]);
+
   const handleChange = (event) => {
     const { name, value } = event.target;
     setForm((prev) => ({ ...prev, [name]: value }));
@@ -996,6 +1165,27 @@ export default function App() {
   const handleWorkFilterChange = (event) => {
     const { name, value } = event.target;
     setWorkFilters((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleCostFormChange = (event) => {
+    const { name, value, type, checked } = event.target;
+    if (name === "historical_only") {
+      setCostForm((prev) => ({ ...prev, historical_only: checked }));
+      return;
+    }
+    if (name === "participants") {
+      setCostForm((prev) => {
+        const participants = new Set(prev.participants || []);
+        if (checked) {
+          participants.add(value);
+        } else {
+          participants.delete(value);
+        }
+        return { ...prev, participants: [...participants] };
+      });
+      return;
+    }
+    setCostForm((prev) => ({ ...prev, [name]: type === "number" ? value : value }));
   };
 
   const upsertProfile = (name) => {
@@ -1347,6 +1537,54 @@ export default function App() {
     }
   };
 
+  const handleCostSubmit = (event) => {
+    event.preventDefault();
+    const amount = Number(costForm.amount_chf);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setCostSyncStatus({ state: "error", message: "Amount must be greater than 0." });
+      return;
+    }
+    if (!costForm.description.trim()) {
+      setCostSyncStatus({ state: "error", message: "Description is required." });
+      return;
+    }
+    if (costForm.type !== "transfer" && (!Array.isArray(costForm.participants) || costForm.participants.length === 0)) {
+      setCostSyncStatus({ state: "error", message: "Select at least one participant." });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const entry = {
+      id: crypto.randomUUID(),
+      date: costForm.date,
+      type: costForm.type,
+      amount_chf: amount,
+      description: costForm.description.trim(),
+      category: costForm.category.trim() || "general",
+      paid_by: costForm.type === "transfer" ? "" : costForm.paid_by,
+      participants: costForm.type === "transfer" ? [] : costForm.participants,
+      from_person: costForm.type === "transfer" ? costForm.from_person : "",
+      to_person: costForm.type === "transfer" ? costForm.to_person : "",
+      historical_only: Boolean(costForm.historical_only),
+      notes: costForm.notes.trim(),
+      created_at: now,
+      updated_at: now,
+    };
+
+    setCostState((prev) => ({ entries: [entry, ...(prev.entries || [])] }));
+    setCostForm((prev) => ({
+      ...initialCostForm,
+      date: formatDateISO(new Date()),
+      paid_by: prev.paid_by,
+      participants: prev.participants,
+    }));
+    setCostSyncStatus({ state: "success", message: "Cost entry saved." });
+  };
+
+  const handleDeleteCostEntry = (id) => {
+    setCostState((prev) => ({ entries: (prev.entries || []).filter((entry) => entry.id !== id) }));
+  };
+
   return (
     <div className="page">
       <main className="layout layout-stack">
@@ -1357,6 +1595,7 @@ export default function App() {
               { id: "km", label: "KM" },
               { id: "gas", label: "Gas" },
               { id: "booking", label: "Booking" },
+              { id: "costs", label: "Costs" },
               { id: "work", label: "Work" },
               { id: "insights", label: "Insights" },
               { id: "accounting", label: "Accounting" },
@@ -1801,6 +2040,212 @@ export default function App() {
                           <td>{booking.guest_name || "—"}</td>
                           <td>{booking.nights}</td>
                           <td>{booking.estimate_total.toFixed(2)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeView === "costs" && (
+          <div className="panel-grid">
+            <section className="card">
+              <header>
+                <p className="eyebrow">Shared finance</p>
+                <h1>Costs & income ledger</h1>
+                <p className="subtitle">Track expenses, income, and settlements with shared participants.</p>
+              </header>
+
+              <form className="form" onSubmit={handleCostSubmit}>
+                <label className="field">
+                  <span>Date</span>
+                  <input type="date" name="date" value={costForm.date} onChange={handleCostFormChange} required />
+                </label>
+                <label className="field">
+                  <span>Type</span>
+                  <select name="type" value={costForm.type} onChange={handleCostFormChange}>
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
+                    <option value="transfer">Settlement transfer</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Amount (CHF)</span>
+                  <input
+                    type="number"
+                    name="amount_chf"
+                    min="0.01"
+                    step="0.01"
+                    value={costForm.amount_chf}
+                    onChange={handleCostFormChange}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span>Description</span>
+                  <input name="description" value={costForm.description} onChange={handleCostFormChange} required />
+                </label>
+                <label className="field">
+                  <span>Category</span>
+                  <input name="category" value={costForm.category} onChange={handleCostFormChange} />
+                </label>
+                {costForm.type === "transfer" ? (
+                  <div className="inline-grid">
+                    <label className="field">
+                      <span>From</span>
+                      <select name="from_person" value={costForm.from_person} onChange={handleCostFormChange}>
+                        {workPeople.map((person) => (
+                          <option key={person} value={person}>
+                            {person}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>To</span>
+                      <select name="to_person" value={costForm.to_person} onChange={handleCostFormChange}>
+                        {workPeople.map((person) => (
+                          <option key={person} value={person}>
+                            {person}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span>Paid by</span>
+                      <select name="paid_by" value={costForm.paid_by} onChange={handleCostFormChange}>
+                        {workPeople.map((person) => (
+                          <option key={person} value={person}>
+                            {person}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <fieldset className="field">
+                      <span>Participants</span>
+                      <div className="filter-row">
+                        {workPeople.map((person) => (
+                          <label key={person} className="checkline">
+                            <input
+                              type="checkbox"
+                              name="participants"
+                              value={person}
+                              checked={(costForm.participants || []).includes(person)}
+                              onChange={handleCostFormChange}
+                            />
+                            <span>{person}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                  </>
+                )}
+                <label className="field">
+                  <span>Notes</span>
+                  <input name="notes" value={costForm.notes} onChange={handleCostFormChange} placeholder="Optional" />
+                </label>
+                <label className="checkline">
+                  <input
+                    type="checkbox"
+                    name="historical_only"
+                    checked={Boolean(costForm.historical_only)}
+                    onChange={handleCostFormChange}
+                  />
+                  <span>Historical reference only (exclude from settlement decisions for now)</span>
+                </label>
+                <div className="form-actions">
+                  <button className="submit" type="submit">
+                    Add cost entry
+                  </button>
+                </div>
+              </form>
+              {costSyncStatus.state !== "idle" && <div className={`status ${costSyncStatus.state}`}>{costSyncStatus.message}</div>}
+            </section>
+
+            <section className="card table-card">
+              <header>
+                <p className="eyebrow">Summary</p>
+                <h2>Net position</h2>
+              </header>
+              <div className="summary-grid compact-summary-grid">
+                <article className="summary-card compact-summary-card">
+                  <p className="summary-label">Expenses</p>
+                  <p className="summary-value">CHF {costSummary.totalExpense.toFixed(2)}</p>
+                </article>
+                <article className="summary-card compact-summary-card">
+                  <p className="summary-label">Income</p>
+                  <p className="summary-value">CHF {costSummary.totalIncome.toFixed(2)}</p>
+                </article>
+                <article className="summary-card compact-summary-card">
+                  <p className="summary-label">Net project cost</p>
+                  <p className="summary-value">CHF {costSummary.netProjectCost.toFixed(2)}</p>
+                  <p className="summary-hint">{costSummary.historicalCount} historical-only entries flagged</p>
+                </article>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Person</th>
+                      <th>Balance (CHF)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workPeople.map((person) => (
+                      <tr key={person}>
+                        <td>{person}</td>
+                        <td>{costSummary.balances[person].toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Type</th>
+                      <th>Description</th>
+                      <th>Category</th>
+                      <th>Amount</th>
+                      <th>Details</th>
+                      <th>Flags</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedCostEntries.length === 0 ? (
+                      <tr>
+                        <td colSpan="8" className="empty-cell">
+                          No cost entries yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      sortedCostEntries.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{entry.date}</td>
+                          <td>{entry.type}</td>
+                          <td>{entry.description}</td>
+                          <td>{entry.category}</td>
+                          <td>{Number(entry.amount_chf).toFixed(2)}</td>
+                          <td>
+                            {entry.type === "transfer"
+                              ? `${entry.from_person} → ${entry.to_person}`
+                              : `${entry.paid_by} · ${(entry.participants || []).join(", ")}`}
+                          </td>
+                          <td>{entry.historical_only ? "Historical" : "Live"}</td>
+                          <td>
+                            <button type="button" className="table-btn danger" onClick={() => handleDeleteCostEntry(entry.id)}>
+                              Delete
+                            </button>
+                          </td>
                         </tr>
                       ))
                     )}

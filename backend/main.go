@@ -113,6 +113,27 @@ type workStatePayload struct {
 	Board []map[string]any `json:"board"`
 }
 
+type costEntryPayload struct {
+	ID             string   `json:"id"`
+	Date           string   `json:"date"`
+	Type           string   `json:"type"`
+	AmountCHF      float64  `json:"amount_chf"`
+	Description    string   `json:"description"`
+	Category       string   `json:"category"`
+	PaidBy         string   `json:"paid_by,omitempty"`
+	Participants   []string `json:"participants,omitempty"`
+	FromPerson     string   `json:"from_person,omitempty"`
+	ToPerson       string   `json:"to_person,omitempty"`
+	HistoricalOnly bool     `json:"historical_only"`
+	Notes          string   `json:"notes,omitempty"`
+	CreatedAt      string   `json:"created_at,omitempty"`
+	UpdatedAt      string   `json:"updated_at,omitempty"`
+}
+
+type costStatePayload struct {
+	Entries []costEntryPayload `json:"entries"`
+}
+
 type handler struct {
 	tableName        string
 	bookingTableName string
@@ -189,6 +210,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/work" {
 			return h.handleGetWork(ctx)
 		}
+		if path == "/costs" {
+			return h.handleGetCosts(ctx)
+		}
 		if strings.HasPrefix(path, "/bookings/") {
 			return h.handleGetBooking(ctx, strings.TrimPrefix(path, "/bookings/"))
 		}
@@ -201,6 +225,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		}
 		if path == "/work" {
 			return h.handlePutWork(ctx, request)
+		}
+		if path == "/costs" {
+			return h.handlePutCosts(ctx, request)
 		}
 	case http.MethodDelete:
 		if strings.HasPrefix(path, "/trip/") {
@@ -713,6 +740,62 @@ func (h *handler) handlePutWork(ctx context.Context, request events.APIGatewayV2
 	return h.respond(http.StatusOK, state), nil
 }
 
+func (h *handler) handleGetCosts(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
+	result, err := h.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &h.workTableName,
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: "cost-state"},
+		},
+	})
+	if err != nil {
+		log.Printf("get cost state failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch cost state"), nil
+	}
+	if len(result.Item) == 0 {
+		return h.respond(http.StatusOK, costStatePayload{Entries: []costEntryPayload{}}), nil
+	}
+
+	payloadAttr, ok := result.Item["payload"].(*types.AttributeValueMemberS)
+	if !ok {
+		return h.respondError(http.StatusInternalServerError, "stored cost payload is invalid"), nil
+	}
+
+	var state costStatePayload
+	if err := json.Unmarshal([]byte(payloadAttr.Value), &state); err != nil {
+		log.Printf("unmarshal cost state failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "stored cost payload is invalid json"), nil
+	}
+	return h.respond(http.StatusOK, state), nil
+}
+
+func (h *handler) handlePutCosts(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	normalized, err := normalizeAndValidateCostPayload([]byte(request.Body))
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	item := map[string]types.AttributeValue{
+		"id":         &types.AttributeValueMemberS{Value: "cost-state"},
+		"payload":    &types.AttributeValueMemberS{Value: string(normalized)},
+		"updated_at": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+	}
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &h.workTableName,
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("put cost state failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to store cost state"), nil
+	}
+
+	var state costStatePayload
+	if err := json.Unmarshal(normalized, &state); err != nil {
+		log.Printf("normalized cost payload unmarshal failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to read normalized cost state"), nil
+	}
+	return h.respond(http.StatusOK, state), nil
+}
+
 func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
 	record, err := parseEventRecord(item)
 	if err != nil {
@@ -1122,6 +1205,85 @@ func normalizeAndValidateWorkPayload(raw []byte) ([]byte, error) {
 		Board: board,
 	}
 	return json.Marshal(normalized)
+}
+
+func normalizeAndValidateCostPayload(raw []byte) ([]byte, error) {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		raw = []byte(`{}`)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, errors.New("invalid json payload")
+	}
+
+	entriesRaw, exists := payload["entries"]
+	if !exists || len(entriesRaw) == 0 {
+		return json.Marshal(costStatePayload{Entries: []costEntryPayload{}})
+	}
+
+	var entries []costEntryPayload
+	if err := json.Unmarshal(entriesRaw, &entries); err != nil {
+		return nil, errors.New("entries must be an array")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	normalized := make([]costEntryPayload, 0, len(entries))
+	for _, entry := range entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+		entry.Date = strings.TrimSpace(entry.Date)
+		entry.Type = strings.TrimSpace(strings.ToLower(entry.Type))
+		entry.Description = strings.TrimSpace(entry.Description)
+		entry.Category = strings.TrimSpace(entry.Category)
+		entry.PaidBy = strings.TrimSpace(entry.PaidBy)
+		entry.FromPerson = strings.TrimSpace(entry.FromPerson)
+		entry.ToPerson = strings.TrimSpace(entry.ToPerson)
+		entry.Notes = strings.TrimSpace(entry.Notes)
+		if entry.ID == "" || entry.Date == "" || entry.Description == "" || entry.Category == "" {
+			return nil, errors.New("each entry requires id, date, description, and category")
+		}
+		if _, err := parseDate(entry.Date); err != nil {
+			return nil, fmt.Errorf("invalid date for entry %s; expected YYYY-MM-DD", entry.ID)
+		}
+		if entry.AmountCHF <= 0 {
+			return nil, fmt.Errorf("amount_chf must be greater than 0 for entry %s", entry.ID)
+		}
+		switch entry.Type {
+		case "expense", "income":
+			if entry.PaidBy == "" {
+				return nil, fmt.Errorf("paid_by is required for %s entry %s", entry.Type, entry.ID)
+			}
+			participants := make([]string, 0, len(entry.Participants))
+			for _, participant := range entry.Participants {
+				trimmed := strings.TrimSpace(participant)
+				if trimmed != "" {
+					participants = append(participants, trimmed)
+				}
+			}
+			if len(participants) == 0 {
+				return nil, fmt.Errorf("participants are required for %s entry %s", entry.Type, entry.ID)
+			}
+			entry.Participants = participants
+		case "transfer":
+			if entry.FromPerson == "" || entry.ToPerson == "" {
+				return nil, fmt.Errorf("from_person and to_person are required for transfer entry %s", entry.ID)
+			}
+			if entry.FromPerson == entry.ToPerson {
+				return nil, fmt.Errorf("from_person and to_person must differ for transfer entry %s", entry.ID)
+			}
+			entry.Participants = nil
+			entry.PaidBy = ""
+		default:
+			return nil, fmt.Errorf("type must be expense, income, or transfer for entry %s", entry.ID)
+		}
+		if entry.CreatedAt == "" {
+			entry.CreatedAt = now
+		}
+		entry.UpdatedAt = now
+		normalized = append(normalized, entry)
+	}
+
+	return json.Marshal(costStatePayload{Entries: normalized})
 }
 
 func roundMoney(value float64) float64 {

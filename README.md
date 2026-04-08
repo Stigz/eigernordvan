@@ -10,7 +10,7 @@ If a correction is needed in the future, the system should write a new event tha
 ## Architecture
 - **Frontend:** React + Vite single-page form (`frontend/`)
 - **Backend:** Go AWS Lambda (`backend/`)
-- **API:** API Gateway HTTP (`/trip`, `/trips`, `/bookings`, `/work`)
+- **API:** API Gateway HTTP (`/trip`, `/trips`, `/bookings`, `/work`, `/costs`)
 - **Storage:** DynamoDB tables for ledger, bookings, and work planner state (`id` primary key)
 - **Infrastructure:** Terraform (`infra/`)
 
@@ -102,6 +102,26 @@ Response includes calculated `delta_km` and `trip_cost_chf`.
 }
 ```
 This stores and retrieves the full Work workspace state for cross-device persistence.
+
+`GET /costs` and `PUT /costs`
+```json
+{
+  "entries": [
+    {
+      "id": "uuid",
+      "date": "2026-04-08",
+      "type": "expense",
+      "amount_chf": 120.5,
+      "description": "Insurance",
+      "category": "insurance",
+      "paid_by": "Nic",
+      "participants": ["Nic", "Kayla"],
+      "historical_only": true
+    }
+  ]
+}
+```
+This stores and retrieves the Costs workspace state for shared expense, income, and settlement tracking.
 
 ## Notes for future features
 - **OCR** would attach a new event (`event_type = trip_ocr`) referencing the original trip ID.
