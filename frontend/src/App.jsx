@@ -318,6 +318,196 @@ const buildEfficiencyLinePath = (points, width, height, padding) => {
     .join(" ");
 };
 
+const accountingDemoPeople = [
+  { id: crypto.randomUUID(), name: "Nic", km_used: 3200, nights_used: 18, work_hours: 42, money_paid: 1200, manual_cost_share: 0 },
+  { id: crypto.randomUUID(), name: "Kayla", km_used: 2100, nights_used: 12, work_hours: 26, money_paid: 600, manual_cost_share: 0 },
+  { id: crypto.randomUUID(), name: "Luk", km_used: 1450, nights_used: 9, work_hours: 14, money_paid: 350, manual_cost_share: 0 },
+  { id: crypto.randomUUID(), name: "Jeanne", km_used: 1850, nights_used: 11, work_hours: 20, money_paid: 500, manual_cost_share: 0 },
+];
+
+const accountingInitialSettings = {
+  km_rate_chf: 0.62,
+  night_rate_chf: 24,
+  work_hour_rate_chf: 38,
+  annual_fixed_costs_chf: 8000,
+  cost_split_mode: "usage",
+  calculation_mode: "annual_balance",
+};
+
+const toAccountingNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const accountingRound2 = (value) => Math.round(value * 100) / 100;
+
+const VanAccountingSandbox = () => {
+  const [people, setPeople] = useState(accountingDemoPeople);
+  const [settings, setSettings] = useState(accountingInitialSettings);
+
+  const totals = useMemo(() => {
+    const usageValues = people.map(
+      (person) => toAccountingNumber(person.km_used) * toAccountingNumber(settings.km_rate_chf) + toAccountingNumber(person.nights_used) * toAccountingNumber(settings.night_rate_chf),
+    );
+    const workValues = people.map((person) => toAccountingNumber(person.work_hours) * toAccountingNumber(settings.work_hour_rate_chf));
+    const sumUsageValue = usageValues.reduce((acc, value) => acc + value, 0);
+    const contributions = people.map((person, index) => toAccountingNumber(person.money_paid) + workValues[index]);
+    const sumContributions = contributions.reduce((acc, value) => acc + value, 0);
+    return { usageValues, workValues, sumUsageValue, contributions, sumContributions };
+  }, [people, settings]);
+
+  const results = useMemo(
+    () =>
+      people.map((person, index) => {
+        const usage_value = totals.usageValues[index];
+        const work_value = totals.workValues[index];
+        // annual_balance mode: contribution_value_i = work_value_i
+        const contribution_value = work_value;
+
+        // annual_balance cost share:
+        // usage: annual_fixed_costs_chf * (usage_value_i / sum(usage_value))
+        // equal: annual_fixed_costs_chf / number_of_people
+        // manual: user-entered manual_cost_share
+        let cost_share = 0;
+        if (settings.cost_split_mode === "usage") {
+          cost_share =
+            totals.sumUsageValue > 0
+              ? toAccountingNumber(settings.annual_fixed_costs_chf) * (usage_value / totals.sumUsageValue)
+              : 0;
+        } else if (settings.cost_split_mode === "equal") {
+          cost_share = people.length > 0 ? toAccountingNumber(settings.annual_fixed_costs_chf) / people.length : 0;
+        } else {
+          cost_share = toAccountingNumber(person.manual_cost_share);
+        }
+        // annual_balance mode: net_balance_i = contribution_value_i - usage_value_i - cost_share_i
+        const net_balance = contribution_value - usage_value - cost_share;
+
+        // relative_fairness mode:
+        // contribution_pool_i = money_paid_i + work_value_i
+        const contribution_pool = totals.contributions[index];
+        // fair_usage_share_i = contribution_pool_i / sum(contribution_pool)
+        const fair_usage_share = totals.sumContributions > 0 ? contribution_pool / totals.sumContributions : 0;
+        // fair_usage_value_i = fair_usage_share_i * sum(usage_value)
+        const fair_usage_value = fair_usage_share * totals.sumUsageValue;
+        // relative_balance_i = fair_usage_value_i - usage_value_i
+        const relative_balance = fair_usage_value - usage_value;
+
+        return {
+          id: person.id,
+          name: person.name,
+          usage_value: accountingRound2(usage_value),
+          work_value: accountingRound2(work_value),
+          contribution_value: accountingRound2(contribution_value),
+          cost_share: accountingRound2(cost_share),
+          net_balance: accountingRound2(net_balance),
+          fair_usage_share,
+          fair_usage_value: accountingRound2(fair_usage_value),
+          relative_balance: accountingRound2(relative_balance),
+        };
+      }),
+    [people, settings, totals],
+  );
+
+  const setPersonValue = (id, field, value) => {
+    setPeople((current) => current.map((person) => (person.id === id ? { ...person, [field]: value } : person)));
+  };
+
+  const addPerson = () => {
+    setPeople((current) => [
+      ...current,
+      { id: crypto.randomUUID(), name: "", km_used: 0, nights_used: 0, work_hours: 0, money_paid: 0, manual_cost_share: 0 },
+    ]);
+  };
+
+  return (
+    <section className="card">
+      <header>
+        <p className="eyebrow">Accounting sandbox</p>
+        <h2>Future Van Accounting Simulator</h2>
+        <p className="subtitle">Edit values below to test fairness models. Calculations update instantly.</p>
+      </header>
+
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>km_used</th>
+              <th>nights_used</th>
+              <th>work_hours</th>
+              <th>money_paid</th>
+              <th>manual cost share</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {people.map((person) => (
+              <tr key={person.id}>
+                <td><input value={person.name} onChange={(event) => setPersonValue(person.id, "name", event.target.value)} /></td>
+                <td><input type="number" value={person.km_used} onChange={(event) => setPersonValue(person.id, "km_used", event.target.value)} /></td>
+                <td><input type="number" value={person.nights_used} onChange={(event) => setPersonValue(person.id, "nights_used", event.target.value)} /></td>
+                <td><input type="number" value={person.work_hours} onChange={(event) => setPersonValue(person.id, "work_hours", event.target.value)} /></td>
+                <td><input type="number" value={person.money_paid} onChange={(event) => setPersonValue(person.id, "money_paid", event.target.value)} /></td>
+                <td><input type="number" value={person.manual_cost_share} onChange={(event) => setPersonValue(person.id, "manual_cost_share", event.target.value)} /></td>
+                <td>
+                  <button className="table-btn danger" type="button" disabled={people.length === 1} onClick={() => setPeople((current) => current.filter((item) => item.id !== person.id))}>
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <button className="submit" type="button" onClick={addPerson}>Add person</button>
+
+      <div className="summary-grid accounting-settings-grid">
+        <label className="field"><span>km_rate_chf</span><input type="number" step="0.01" value={settings.km_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, km_rate_chf: event.target.value }))} /></label>
+        <label className="field"><span>night_rate_chf</span><input type="number" step="0.01" value={settings.night_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, night_rate_chf: event.target.value }))} /></label>
+        <label className="field"><span>work_hour_rate_chf</span><input type="number" step="0.01" value={settings.work_hour_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, work_hour_rate_chf: event.target.value }))} /></label>
+        <label className="field"><span>annual_fixed_costs_chf</span><input type="number" step="0.01" value={settings.annual_fixed_costs_chf} onChange={(event) => setSettings((current) => ({ ...current, annual_fixed_costs_chf: event.target.value }))} /></label>
+        <label className="field">
+          <span>cost_split_mode</span>
+          <select value={settings.cost_split_mode} onChange={(event) => setSettings((current) => ({ ...current, cost_split_mode: event.target.value }))}>
+            <option value="usage">usage</option><option value="equal">equal</option><option value="manual">manual</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>calculation_mode</span>
+          <select value={settings.calculation_mode} onChange={(event) => setSettings((current) => ({ ...current, calculation_mode: event.target.value }))}>
+            <option value="annual_balance">annual_balance</option><option value="relative_fairness">relative_fairness</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th><th>usage_value</th><th>work_value</th><th>contribution_value</th><th>cost_share</th><th>net_balance</th><th>fair_usage_share</th><th>fair_usage_value</th><th>relative_balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {results.map((result) => (
+              <tr key={result.id}>
+                <td>{result.name || "(unnamed)"}</td>
+                <td>{result.usage_value.toFixed(2)}</td>
+                <td>{result.work_value.toFixed(2)}</td>
+                <td>{result.contribution_value.toFixed(2)}</td>
+                <td>{result.cost_share.toFixed(2)}</td>
+                <td className={result.net_balance >= 0 ? "balance-positive" : "balance-negative"}>{result.net_balance.toFixed(2)}</td>
+                <td>{(result.fair_usage_share * 100).toFixed(2)}%</td>
+                <td>{result.fair_usage_value.toFixed(2)}</td>
+                <td className={result.relative_balance >= 0 ? "balance-positive" : "balance-negative"}>{result.relative_balance.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+};
+
 export default function App() {
   const [activeView, setActiveView] = useState("km");
   const [form, setForm] = useState(initialForm);
@@ -1169,6 +1359,7 @@ export default function App() {
               { id: "booking", label: "Booking" },
               { id: "work", label: "Work" },
               { id: "insights", label: "Insights" },
+              { id: "accounting", label: "Accounting" },
             ].map((view) => (
               <button
                 key={view.id}
@@ -2034,6 +2225,8 @@ export default function App() {
             </div>
           </section>
         )}
+
+        {activeView === "accounting" && <VanAccountingSandbox />}
       </main>
     </div>
   );

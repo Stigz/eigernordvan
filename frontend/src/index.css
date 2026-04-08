@@ -572,6 +572,20 @@ th {
   background: #fff;
 }
 
+.accounting-settings-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.balance-positive {
+  color: #15803d;
+  font-weight: 700;
+}
+
+.balance-negative {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
 @media (max-width: 959px) {
   .inline-grid.two-col,
   .inline-grid.three-col,
