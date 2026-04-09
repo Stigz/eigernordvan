@@ -852,6 +852,14 @@ th {
   fill: #dc2626;
 }
 
+.waterfall-km {
+  fill: #2563eb;
+}
+
+.waterfall-nights {
+  fill: #7c3aed;
+}
+
 .waterfall-total {
   fill: #0f766e;
 }
@@ -925,4 +933,52 @@ th {
 
 .person-details {
   margin-top: -2px;
+}
+
+.split-pies-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.split-pie-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.split-pie-card h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #1e293b;
+}
+
+.split-pie-card svg {
+  display: block;
+  width: 100%;
+  max-width: 148px;
+  margin: 0 auto 10px;
+}
+
+.split-pie-card ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.split-pie-card li {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.split-pie-card .legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
 }
