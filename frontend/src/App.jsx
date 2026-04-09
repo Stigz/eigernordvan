@@ -374,14 +374,11 @@ const accountingPeople = [
 ];
 
 const accountingInitialSettings = {
-  km_rate_chf: 0.5,
+  km_rate_chf: 0.62,
   night_rate_chf: 25,
   work_hour_rate_chf: 20,
-  annual_common_costs_chf: 8000,
+  yearly_van_costs_chf: 2000,
   monthly_payment_chf: 50,
-  include_monthly_payments: true,
-  rental_income_chf: 0,
-  reserve_chf: 0,
 };
 
 const toAccountingNumber = (value) => {
@@ -392,76 +389,137 @@ const toAccountingNumber = (value) => {
 const accountingRound2 = (value) => Math.round(value * 100) / 100;
 const formatChf = (value) => `${toAccountingNumber(value).toFixed(2)} CHF`;
 
+const WaterfallChart = ({ name, values, finalBalance }) => {
+  const chartHeight = 220;
+  const stepWidth = 84;
+  const stepGap = 34;
+  const leftPad = 36;
+  const rightPad = 18;
+  const topPad = 24;
+  const bottomPad = 48;
+  const chartWidth = leftPad + rightPad + stepWidth * values.length + stepGap * (values.length - 1);
+
+  let running = 0;
+  const segments = values.map((step) => {
+    if (step.kind === "total") {
+      return { ...step, start: 0, end: step.value };
+    }
+    const start = running;
+    running += step.value;
+    return { ...step, start, end: running };
+  });
+
+  const yValues = [0, ...segments.flatMap((segment) => [segment.start, segment.end]), finalBalance];
+  const min = Math.min(...yValues, 0);
+  const max = Math.max(...yValues, 0);
+  const range = max - min || 1;
+  const toY = (value) => topPad + ((max - value) / range) * (chartHeight - topPad - bottomPad);
+  const baselineY = toY(0);
+
+  return (
+    <svg className="waterfall-chart" viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`${name} annual balance waterfall`}>
+      <line x1={leftPad - 12} y1={baselineY} x2={chartWidth - rightPad + 8} y2={baselineY} className="waterfall-zero-line" />
+      {segments.map((segment, index) => {
+        const x = leftPad + index * (stepWidth + stepGap);
+        const yStart = toY(segment.start);
+        const yEnd = toY(segment.end);
+        const y = Math.min(yStart, yEnd);
+        const barHeight = Math.max(4, Math.abs(yStart - yEnd));
+        const isPositive = segment.value >= 0;
+        const isTotal = segment.kind === "total";
+
+        return (
+          <Fragment key={`${segment.label}-${index}`}>
+            {!isTotal && index > 0 ? (
+              <line
+                x1={x - stepGap + 8}
+                y1={toY(segments[index - 1].end)}
+                x2={x}
+                y2={toY(segment.start)}
+                className="waterfall-connector"
+              />
+            ) : null}
+            <rect x={x} y={y} width={stepWidth} height={barHeight} rx="8" className={isTotal ? "waterfall-total" : isPositive ? "waterfall-positive" : "waterfall-negative"} />
+            <text x={x + stepWidth / 2} y={Math.max(14, y - 8)} textAnchor="middle" className="waterfall-value">
+              {`${segment.value >= 0 ? "+" : "−"}${Math.abs(segment.value).toFixed(0)}`}
+            </text>
+            <text x={x + stepWidth / 2} y={chartHeight - 16} textAnchor="middle" className="waterfall-label">
+              {segment.label}
+            </text>
+          </Fragment>
+        );
+      })}
+    </svg>
+  );
+};
+
 const VanAccountingSandbox = () => {
   const [people, setPeople] = useState(accountingPeople);
   const [settings, setSettings] = useState(accountingInitialSettings);
 
-  const monthlyPaymentYearly = toAccountingNumber(settings.monthly_payment_chf) * 12;
-
   const results = useMemo(() => {
-    const totalUseValue = people.reduce((sum, person) => {
-      const useValue =
+    const totalUseCost = people.reduce((sum, person) => {
+      const useCost =
         toAccountingNumber(person.km_used) * toAccountingNumber(settings.km_rate_chf) +
         toAccountingNumber(person.nights_used) * toAccountingNumber(settings.night_rate_chf);
-      return sum + useValue;
+      return sum + useCost;
     }, 0);
 
     return people.map((person) => {
-      const useValue =
+      const useCost =
         toAccountingNumber(person.km_used) * toAccountingNumber(settings.km_rate_chf) +
         toAccountingNumber(person.nights_used) * toAccountingNumber(settings.night_rate_chf);
-      const work = toAccountingNumber(person.work_hours) * toAccountingNumber(settings.work_hour_rate_chf);
+      const workCredit = toAccountingNumber(person.work_hours) * toAccountingNumber(settings.work_hour_rate_chf);
       const extraPayments = toAccountingNumber(person.extra_payments);
-      const monthlyPayment = settings.include_monthly_payments ? monthlyPaymentYearly : 0;
-      const payments = extraPayments + monthlyPayment;
-      const usageShare = totalUseValue > 0 ? useValue / totalUseValue : 0;
-      const commonCosts = toAccountingNumber(settings.annual_common_costs_chf) * usageShare;
-      const annualBalance = work + payments - useValue - commonCosts;
-      const putIn = work + payments;
-      const tookOut = useValue + commonCosts;
+      const paymentsMade = extraPayments + toAccountingNumber(settings.monthly_payment_chf) * 12;
+      const usageShare = totalUseCost > 0 ? useCost / totalUseCost : 0;
+      const yearlyCostShare = toAccountingNumber(settings.yearly_van_costs_chf) * usageShare;
+      const annualBalance = workCredit + paymentsMade - useCost - yearlyCostShare;
 
       return {
         ...person,
-        work: accountingRound2(work),
-        payments: accountingRound2(payments),
-        useValue: accountingRound2(useValue),
-        commonCosts: accountingRound2(commonCosts),
+        workCredit: accountingRound2(workCredit),
+        paymentsMade: accountingRound2(paymentsMade),
+        useCost: accountingRound2(useCost),
+        yearlyCostShare: accountingRound2(yearlyCostShare),
         annualBalance: accountingRound2(annualBalance),
-        usageShare,
-        putIn: accountingRound2(putIn),
-        tookOut: accountingRound2(tookOut),
       };
     });
-  }, [people, settings, monthlyPaymentYearly]);
+  }, [people, settings]);
 
   const setPersonValue = (id, field, value) => {
     setPeople((current) => current.map((person) => (person.id === id ? { ...person, [field]: value } : person)));
   };
 
   const maxBalanceMagnitude = Math.max(1, ...results.map((result) => Math.abs(result.annualBalance)));
-  const vanRemaining = toAccountingNumber(settings.rental_income_chf) - toAccountingNumber(settings.annual_common_costs_chf) - toAccountingNumber(settings.reserve_chf);
 
   return (
-    <section className="card accounting-card simple-accounting">
+    <section className="card accounting-card simple-accounting annual-balance-dashboard">
       <header>
         <p className="eyebrow">Van accounting</p>
         <h2>Annual balance</h2>
-        <p className="subtitle">Annual balance = work + payments − use − common costs.</p>
+        <p className="subtitle">See what each person put in, took out, and where their annual balance lands.</p>
       </header>
 
       <section className="summary-grid accounting-settings-grid compact-settings">
         <label className="field"><span>Kilometer rate (CHF)</span><input type="number" step="0.01" value={settings.km_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, km_rate_chf: event.target.value }))} /></label>
         <label className="field"><span>Night rate (CHF)</span><input type="number" step="0.01" value={settings.night_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, night_rate_chf: event.target.value }))} /></label>
         <label className="field"><span>Work hour rate (CHF)</span><input type="number" step="0.01" value={settings.work_hour_rate_chf} onChange={(event) => setSettings((current) => ({ ...current, work_hour_rate_chf: event.target.value }))} /></label>
-        <label className="field"><span>Annual common costs (CHF)</span><input type="number" step="0.01" value={settings.annual_common_costs_chf} onChange={(event) => setSettings((current) => ({ ...current, annual_common_costs_chf: event.target.value }))} /></label>
+        <label className="field"><span>Yearly van costs (CHF)</span><input type="number" step="0.01" value={settings.yearly_van_costs_chf} onChange={(event) => setSettings((current) => ({ ...current, yearly_van_costs_chf: event.target.value }))} /></label>
         <label className="field"><span>Monthly payment (CHF)</span><input type="number" step="0.01" value={settings.monthly_payment_chf} onChange={(event) => setSettings((current) => ({ ...current, monthly_payment_chf: event.target.value }))} /></label>
       </section>
 
-      <p className="monthly-note">Includes CHF {toAccountingNumber(settings.monthly_payment_chf).toFixed(0)}/month basic contribution.</p>
+      <p className="monthly-note">Includes CHF 50/month basic contribution for each person.</p>
 
       <section className="accounting-person-grid">
         {results.map((result) => {
-          const totalFlow = Math.max(1, result.work + result.payments + result.useValue + result.commonCosts);
+          const waterfallValues = [
+            { label: "Work credit", value: result.workCredit },
+            { label: "Payments made", value: result.paymentsMade },
+            { label: "Use cost", value: -result.useCost },
+            { label: "Share of yearly van costs", value: -result.yearlyCostShare },
+            { label: "Annual balance", value: result.annualBalance, kind: "total" },
+          ];
           return (
             <article key={result.id} className="accounting-person-card clean-card">
               <header>
@@ -476,38 +534,43 @@ const VanAccountingSandbox = () => {
                 <label className="field"><span>Extra payments</span><input type="number" value={result.extra_payments} onChange={(event) => setPersonValue(result.id, "extra_payments", event.target.value)} /></label>
               </div>
 
-              <div className="flow-track" aria-label={`${result.name} annual flow`}>
-                <div className="flow-segment work" style={{ width: `${(result.work / totalFlow) * 100}%` }} title={`Work ${formatChf(result.work)}`} />
-                <div className="flow-segment payments" style={{ width: `${(result.payments / totalFlow) * 100}%` }} title={`Payments ${formatChf(result.payments)}`} />
-                <div className="flow-segment use" style={{ width: `${(result.useValue / totalFlow) * 100}%` }} title={`Use ${formatChf(result.useValue)}`} />
-                <div className="flow-segment common" style={{ width: `${(result.commonCosts / totalFlow) * 100}%` }} title={`Common costs ${formatChf(result.commonCosts)}`} />
-              </div>
-              <div className="flow-labels">
-                <span>Put in: {formatChf(result.putIn)}</span>
-                <span>Took out: {formatChf(result.tookOut)}</span>
-              </div>
+              <WaterfallChart name={result.name} values={waterfallValues} finalBalance={result.annualBalance} />
 
               <footer className="card-footer-metrics">
-                <span>Work: {formatChf(result.work)}</span>
-                <span>Payments: {formatChf(result.payments)}</span>
-                <span>Use: {formatChf(result.useValue)}</span>
-                <span>Common costs: {formatChf(result.commonCosts)}</span>
+                <span>Work: {formatChf(result.workCredit)}</span>
+                <span>Payments: {formatChf(result.paymentsMade)}</span>
+                <span>Use: {formatChf(result.useCost)}</span>
+                <span>Yearly costs: {formatChf(result.yearlyCostShare)}</span>
               </footer>
+              <details className="calculation-details person-details">
+                <summary>Show calculation details</summary>
+                <ul className="formula-list">
+                  <li>Use cost = km × rate + nights × rate</li>
+                  <li>Work credit = hours × rate</li>
+                  <li>Payments = extra payments + monthly payment × 12</li>
+                  <li>Yearly cost share = yearly van costs × usage share</li>
+                  <li>Annual balance = work + payments - use - yearly costs</li>
+                </ul>
+              </details>
             </article>
           );
         })}
       </section>
 
-      <section className="accounting-visual simple-chart">
-        <h3>Group comparison</h3>
-        <div className="chart-list">
+      <section className="accounting-visual simple-chart group-balance-chart">
+        <h3>Annual balances</h3>
+        <div className="chart-list group-bars">
           {results.map((result) => (
             <div key={`balance-${result.id}`} className="chart-row annual-balance-row">
               <span className="chart-month">{result.name}</span>
-              <div className="chart-track neutral">
+              <div className="chart-track neutral diverging">
+                <div className="zero-line" />
                 <div
                   className={`chart-bar ${result.annualBalance >= 0 ? "positive" : "negative"}`}
-                  style={{ width: `${(Math.abs(result.annualBalance) / maxBalanceMagnitude) * 100}%` }}
+                  style={{
+                    width: `${(Math.abs(result.annualBalance) / maxBalanceMagnitude) * 50}%`,
+                    marginLeft: result.annualBalance >= 0 ? "50%" : `${50 - (Math.abs(result.annualBalance) / maxBalanceMagnitude) * 50}%`,
+                  }}
                 />
               </div>
               <span className={`chart-value ${result.annualBalance >= 0 ? "balance-positive" : "balance-negative"}`}>{formatChf(result.annualBalance)}</span>
@@ -515,25 +578,6 @@ const VanAccountingSandbox = () => {
           ))}
         </div>
       </section>
-
-      <section className="accounting-visual van-account-section">
-        <h3>Van account</h3>
-        <div className="summary-grid accounting-totals-grid">
-          <label className="field"><span>Rental income (CHF)</span><input type="number" step="0.01" value={settings.rental_income_chf} onChange={(event) => setSettings((current) => ({ ...current, rental_income_chf: event.target.value }))} /></label>
-          <article className="summary-card"><p className="summary-label">Annual common costs</p><p className="summary-value">{formatChf(settings.annual_common_costs_chf)}</p></article>
-          <label className="field"><span>Reserve (CHF)</span><input type="number" step="0.01" value={settings.reserve_chf} onChange={(event) => setSettings((current) => ({ ...current, reserve_chf: event.target.value }))} /></label>
-          <article className="summary-card"><p className="summary-label">Remaining amount</p><p className={`summary-value ${vanRemaining >= 0 ? "balance-positive" : "balance-negative"}`}>{formatChf(vanRemaining)}</p></article>
-        </div>
-      </section>
-
-      <details className="calculation-details">
-        <summary>Show calculation details</summary>
-        <ul className="formula-list">
-          <li>Use = Kilometers × km rate + Nights × night rate</li>
-          <li>Common costs = Annual common costs × (Use / Total use)</li>
-          <li>Annual balance = Work + Payments − Use − Common costs</li>
-        </ul>
-      </details>
     </section>
   );
 };
