@@ -483,6 +483,8 @@ const accountingInitialSettings = {
   monthly_payment_chf: 50,
 };
 
+const accountingPersonPalette = ["#2563eb", "#7c3aed", "#db2777", "#16a34a", "#ea580c", "#0891b2"];
+
 const toAccountingNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -490,6 +492,61 @@ const toAccountingNumber = (value) => {
 
 const accountingRound2 = (value) => Math.round(value * 100) / 100;
 const formatChf = (value) => `${toAccountingNumber(value).toFixed(2)} CHF`;
+
+const describePieArc = (cx, cy, radius, startAngle, endAngle) => {
+  const start = {
+    x: cx + radius * Math.cos(startAngle),
+    y: cy + radius * Math.sin(startAngle),
+  };
+  const end = {
+    x: cx + radius * Math.cos(endAngle),
+    y: cy + radius * Math.sin(endAngle),
+  };
+  const largeArcFlag = endAngle - startAngle > Math.PI ? 1 : 0;
+  return `M ${cx} ${cy} L ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArcFlag} 1 ${end.x} ${end.y} Z`;
+};
+
+const PieChart = ({ title, slices }) => {
+  const size = 148;
+  const radius = 60;
+  const cx = size / 2;
+  const cy = size / 2;
+  const total = slices.reduce((sum, slice) => sum + toAccountingNumber(slice.value), 0);
+  let angle = -Math.PI / 2;
+
+  const segments = slices
+    .filter((slice) => toAccountingNumber(slice.value) > 0)
+    .map((slice) => {
+      const value = toAccountingNumber(slice.value);
+      const delta = total > 0 ? (value / total) * Math.PI * 2 : 0;
+      const start = angle;
+      const end = angle + delta;
+      angle = end;
+      return { ...slice, value, path: describePieArc(cx, cy, radius, start, end), percentage: total > 0 ? (value / total) * 100 : 0 };
+    });
+
+  return (
+    <article className="split-pie-card">
+      <h4>{title}</h4>
+      <svg viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`${title} split pie chart`}>
+        <circle cx={cx} cy={cy} r={radius} fill="#e2e8f0" />
+        {segments.map((segment) => (
+          <path key={`${title}-${segment.name}`} d={segment.path} fill={segment.color} />
+        ))}
+        <circle cx={cx} cy={cy} r={30} fill="#ffffff" />
+      </svg>
+      <ul>
+        {segments.map((segment) => (
+          <li key={`${title}-legend-${segment.name}`}>
+            <span className="legend-dot" style={{ backgroundColor: segment.color }} />
+            <span>{segment.name}</span>
+            <strong>{segment.percentage.toFixed(1)}%</strong>
+          </li>
+        ))}
+      </ul>
+    </article>
+  );
+};
 
 const WaterfallChart = ({ name, values, finalBalance }) => {
   const chartHeight = 220;
@@ -529,6 +586,15 @@ const WaterfallChart = ({ name, values, finalBalance }) => {
         const barHeight = Math.max(4, Math.abs(yStart - yEnd));
         const isPositive = segment.value >= 0;
         const isTotal = segment.kind === "total";
+        const className = isTotal
+          ? "waterfall-total"
+          : segment.tone === "km"
+            ? "waterfall-km"
+            : segment.tone === "nights"
+              ? "waterfall-nights"
+              : isPositive
+                ? "waterfall-positive"
+                : "waterfall-negative";
 
         return (
           <Fragment key={`${segment.label}-${index}`}>
@@ -541,7 +607,7 @@ const WaterfallChart = ({ name, values, finalBalance }) => {
                 className="waterfall-connector"
               />
             ) : null}
-            <rect x={x} y={y} width={stepWidth} height={barHeight} rx="8" className={isTotal ? "waterfall-total" : isPositive ? "waterfall-positive" : "waterfall-negative"} />
+            <rect x={x} y={y} width={stepWidth} height={barHeight} rx="8" className={className} />
             <text x={x + stepWidth / 2} y={Math.max(14, y - 8)} textAnchor="middle" className="waterfall-value">
               {`${segment.value >= 0 ? "+" : "−"}${Math.abs(segment.value).toFixed(0)}`}
             </text>
@@ -568,9 +634,9 @@ const VanAccountingSandbox = () => {
     }, 0);
 
     return people.map((person) => {
-      const useCost =
-        toAccountingNumber(person.km_used) * toAccountingNumber(settings.km_rate_chf) +
-        toAccountingNumber(person.nights_used) * toAccountingNumber(settings.night_rate_chf);
+      const kmCost = toAccountingNumber(person.km_used) * toAccountingNumber(settings.km_rate_chf);
+      const nightCost = toAccountingNumber(person.nights_used) * toAccountingNumber(settings.night_rate_chf);
+      const useCost = kmCost + nightCost;
       const workCredit = toAccountingNumber(person.work_hours) * toAccountingNumber(settings.work_hour_rate_chf);
       const extraPayments = toAccountingNumber(person.extra_payments);
       const paymentsMade = extraPayments + toAccountingNumber(settings.monthly_payment_chf) * 12;
@@ -580,6 +646,9 @@ const VanAccountingSandbox = () => {
 
       return {
         ...person,
+        kmCost: accountingRound2(kmCost),
+        nightCost: accountingRound2(nightCost),
+        usageSharePct: accountingRound2(usageShare * 100),
         workCredit: accountingRound2(workCredit),
         paymentsMade: accountingRound2(paymentsMade),
         useCost: accountingRound2(useCost),
@@ -594,6 +663,12 @@ const VanAccountingSandbox = () => {
   };
 
   const maxBalanceMagnitude = Math.max(1, ...results.map((result) => Math.abs(result.annualBalance)));
+  const pieCategories = [
+    { key: "km_used", title: "Kilometers used" },
+    { key: "nights_used", title: "Nights used" },
+    { key: "useCost", title: "Use cost split" },
+    { key: "yearlyCostShare", title: "Yearly cost share split" },
+  ];
 
   return (
     <section className="card accounting-card simple-accounting annual-balance-dashboard">
@@ -618,7 +693,8 @@ const VanAccountingSandbox = () => {
           const waterfallValues = [
             { label: "Work credit", value: result.workCredit },
             { label: "Payments made", value: result.paymentsMade },
-            { label: "Use cost", value: -result.useCost },
+            { label: "Km cost", value: -result.kmCost, tone: "km" },
+            { label: "Night cost", value: -result.nightCost, tone: "nights" },
             { label: "Share of yearly van costs", value: -result.yearlyCostShare },
             { label: "Annual balance", value: result.annualBalance, kind: "total" },
           ];
@@ -642,14 +718,20 @@ const VanAccountingSandbox = () => {
                 <span>Work: {formatChf(result.workCredit)}</span>
                 <span>Payments: {formatChf(result.paymentsMade)}</span>
                 <span>Use: {formatChf(result.useCost)}</span>
+                <span>Km: {formatChf(result.kmCost)}</span>
+                <span>Nights: {formatChf(result.nightCost)}</span>
                 <span>Yearly costs: {formatChf(result.yearlyCostShare)}</span>
+                <span>Usage share: {result.usageSharePct.toFixed(2)}%</span>
               </footer>
               <details className="calculation-details person-details">
                 <summary>Show calculation details</summary>
                 <ul className="formula-list">
-                  <li>Use cost = km × rate + nights × rate</li>
+                  <li>Km cost = km × km rate</li>
+                  <li>Night cost = nights × night rate</li>
+                  <li>Use cost = km cost + night cost</li>
                   <li>Work credit = hours × rate</li>
                   <li>Payments = extra payments + monthly payment × 12</li>
+                  <li>Usage share = use cost ÷ total use cost</li>
                   <li>Yearly cost share = yearly van costs × usage share</li>
                   <li>Annual balance = work + payments - use - yearly costs</li>
                 </ul>
@@ -677,6 +759,23 @@ const VanAccountingSandbox = () => {
               </div>
               <span className={`chart-value ${result.annualBalance >= 0 ? "balance-positive" : "balance-negative"}`}>{formatChf(result.annualBalance)}</span>
             </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="accounting-visual simple-chart split-pies-grid">
+        <h3>Split between people by category</h3>
+        <div className="split-pies-list">
+          {pieCategories.map((category) => (
+            <PieChart
+              key={category.key}
+              title={category.title}
+              slices={results.map((result, index) => ({
+                name: result.name,
+                value: result[category.key],
+                color: accountingPersonPalette[index % accountingPersonPalette.length],
+              }))}
+            />
           ))}
         </div>
       </section>
