@@ -63,6 +63,103 @@ const initialCostForm = {
   historical_only: true,
 };
 
+const costCategories = [
+  { id: "vehicle_purchase", label: "Vehicle purchase" },
+  { id: "repairs_service", label: "Repairs & service" },
+  { id: "registration_fees", label: "Registration & road fees" },
+  { id: "insurance", label: "Insurance" },
+  { id: "taxes", label: "Taxes" },
+  { id: "fuel_energy", label: "Fuel & energy" },
+  { id: "hardware_material", label: "Hardware & material" },
+  { id: "interior_build", label: "Interior build" },
+  { id: "equipment", label: "Equipment & accessories" },
+  { id: "trip_payout", label: "Trip payout / reimbursement" },
+  { id: "settlement", label: "Internal settlement" },
+  { id: "general", label: "General" },
+];
+
+const categoryLabelMap = Object.fromEntries(costCategories.map((category) => [category.id, category.label]));
+
+const inferCostCategory = (description, type) => {
+  const normalized = String(description || "").toLowerCase();
+  if (type === "transfer") {
+    return "settlement";
+  }
+  if (
+    normalized.includes("sprinter") ||
+    normalized.includes("fahrzeug") ||
+    normalized.includes("van kauf") ||
+    normalized.includes("purchase")
+  ) {
+    return "vehicle_purchase";
+  }
+  if (
+    normalized.includes("werkstatt") ||
+    normalized.includes("repar") ||
+    normalized.includes("brems") ||
+    normalized.includes("handbrems") ||
+    normalized.includes("mech") ||
+    normalized.includes("pneus") ||
+    normalized.includes("batterie")
+  ) {
+    return "repairs_service";
+  }
+  if (
+    normalized.includes("strassenverkehrsamt") ||
+    normalized.includes("tagesschild") ||
+    normalized.includes("tageschild") ||
+    normalized.includes("autobahn")
+  ) {
+    return "registration_fees";
+  }
+  if (normalized.includes("versicherung") || normalized.includes("tcs")) {
+    return "insurance";
+  }
+  if (normalized.includes("steuer")) {
+    return "taxes";
+  }
+  if (normalized.includes("benzin") || normalized.includes("diesel") || normalized.includes("tank")) {
+    return "fuel_energy";
+  }
+  if (
+    normalized.includes("holz") ||
+    normalized.includes("bauhaus") ||
+    normalized.includes("landi") ||
+    normalized.includes("schraub") ||
+    normalized.includes("kabel") ||
+    normalized.includes("brunox") ||
+    normalized.includes("farbe") ||
+    normalized.includes("epoxy") ||
+    normalized.includes("material")
+  ) {
+    return "hardware_material";
+  }
+  if (
+    normalized.includes("bett") ||
+    normalized.includes("lattenrost") ||
+    normalized.includes("futon") ||
+    normalized.includes("table") ||
+    normalized.includes("terrassenholz")
+  ) {
+    return "interior_build";
+  }
+  if (
+    normalized.includes("solar") ||
+    normalized.includes("inverter") ||
+    normalized.includes("charger") ||
+    normalized.includes("heizung") ||
+    normalized.includes("kühlschrank") ||
+    normalized.includes("detektor") ||
+    normalized.includes("wassertank")
+  ) {
+    return "equipment";
+  }
+  if (normalized.includes("auszahlung") || normalized.includes("trip")) {
+    return "trip_payout";
+  }
+  return "general";
+};
+
 const bookingStatusPriority = {
   open: 0,
   blocked: 1,
@@ -308,7 +405,12 @@ const parseCostState = () => {
     if (!Array.isArray(parsed?.entries)) {
       return { entries: [] };
     }
-    return { entries: parsed.entries };
+    return {
+      entries: parsed.entries.map((entry) => ({
+        ...entry,
+        category: entry?.category || inferCostCategory(entry?.description, entry?.type),
+      })),
+    };
   } catch (_error) {
     return { entries: [] };
   }
@@ -615,6 +717,7 @@ export default function App() {
   const [isWorkLoaded, setIsWorkLoaded] = useState(false);
   const [costState, setCostState] = useState(() => parseCostState());
   const [costForm, setCostForm] = useState(() => ({ ...initialCostForm, date: formatDateISO(new Date()) }));
+  const [costFilters, setCostFilters] = useState({ year: "all", category: "all", person: "all", type: "all" });
   const [costSyncStatus, setCostSyncStatus] = useState({ state: "idle", message: "" });
   const [isCostLoaded, setIsCostLoaded] = useState(false);
 
@@ -940,6 +1043,69 @@ export default function App() {
     [costState.entries],
   );
 
+  const costYearOptions = useMemo(() => {
+    const years = new Set();
+    (costState.entries || []).forEach((entry) => {
+      const year = String(entry?.date || "").slice(0, 4);
+      if (/^\d{4}$/.test(year)) {
+        years.add(year);
+      }
+    });
+    return [...years].sort((a, b) => b.localeCompare(a));
+  }, [costState.entries]);
+
+  const filteredCostEntries = useMemo(
+    () =>
+      sortedCostEntries.filter((entry) => {
+        if (costFilters.type !== "all" && entry.type !== costFilters.type) {
+          return false;
+        }
+        if (costFilters.category !== "all" && entry.category !== costFilters.category) {
+          return false;
+        }
+        if (costFilters.year !== "all" && String(entry.date || "").slice(0, 4) !== costFilters.year) {
+          return false;
+        }
+        if (costFilters.person !== "all") {
+          if (entry.type === "transfer") {
+            return entry.from_person === costFilters.person || entry.to_person === costFilters.person;
+          }
+          const participants = Array.isArray(entry.participants) ? entry.participants : [];
+          return entry.paid_by === costFilters.person || participants.includes(costFilters.person);
+        }
+        return true;
+      }),
+    [sortedCostEntries, costFilters],
+  );
+
+  const categoryTotals = useMemo(() => {
+    const totals = {};
+    filteredCostEntries.forEach((entry) => {
+      if (entry.type === "transfer") {
+        return;
+      }
+      const category = entry.category || "general";
+      totals[category] = (totals[category] || 0) + Number(entry.amount_chf || 0);
+    });
+    return Object.entries(totals)
+      .sort(([, a], [, b]) => b - a)
+      .map(([category, amount]) => ({ category, amount }));
+  }, [filteredCostEntries]);
+
+  const historicalYearTotals = useMemo(() => {
+    const totals = {};
+    (costState.entries || []).forEach((entry) => {
+      if (!entry.historical_only) {
+        return;
+      }
+      const year = String(entry.date || "").slice(0, 4) || "unknown";
+      totals[year] = (totals[year] || 0) + Number(entry.amount_chf || 0);
+    });
+    return Object.entries(totals)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([year, amount]) => ({ year, amount }));
+  }, [costState.entries]);
+
   const costSummary = useMemo(() => {
     const balances = Object.fromEntries(workPeople.map((person) => [person, 0]));
     let totalExpense = 0;
@@ -1196,7 +1362,14 @@ export default function App() {
           setIsCostLoaded(true);
           return;
         }
-        const nextState = { entries: Array.isArray(payload.entries) ? payload.entries : [] };
+        const nextState = {
+          entries: Array.isArray(payload.entries)
+            ? payload.entries.map((entry) => ({
+                ...entry,
+                category: entry?.category || inferCostCategory(entry?.description, entry?.type),
+              }))
+            : [],
+        };
         setCostState(nextState);
         saveCostState(nextState);
         setCostSyncStatus({ state: "success", message: "Cost workspace synced." });
@@ -1278,6 +1451,11 @@ export default function App() {
       return;
     }
     setCostForm((prev) => ({ ...prev, [name]: type === "number" ? value : value }));
+  };
+
+  const handleCostFilterChange = (event) => {
+    const { name, value } = event.target;
+    setCostFilters((prev) => ({ ...prev, [name]: value }));
   };
 
   const upsertProfile = (name) => {
@@ -1656,7 +1834,7 @@ export default function App() {
       type: costForm.type,
       amount_chf: amount,
       description: costForm.description.trim(),
-      category: costForm.category.trim() || "general",
+      category: costForm.category.trim() || inferCostCategory(costForm.description, costForm.type),
       paid_by: costForm.type === "transfer" ? "" : costForm.paid_by,
       participants: costForm.type === "transfer" ? [] : costForm.participants,
       from_person: costForm.type === "transfer" ? costForm.from_person : "",
@@ -1681,6 +1859,54 @@ export default function App() {
     setCostState((prev) => ({ entries: (prev.entries || []).filter((entry) => entry.id !== id) }));
   };
 
+  const handleImportHistoricalDataset = () => {
+    const raw = window.prompt("Paste lines as: description<TAB>amount (one per line).");
+    if (!raw) {
+      return;
+    }
+    const lines = raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const importedEntries = lines
+      .map((line) => line.split("\t").map((part) => part.trim()))
+      .filter((parts) => parts.length >= 2)
+      .map((parts, index) => {
+        const description = parts[0];
+        const amount = Number(String(parts[1]).replace(/[^0-9.-]/g, ""));
+        if (!description || !Number.isFinite(amount)) {
+          return null;
+        }
+        const now = new Date().toISOString();
+        return {
+          id: crypto.randomUUID(),
+          date: formatDateISO(new Date(Date.now() - index * 86400000)),
+          type: amount < 0 ? "income" : "expense",
+          amount_chf: Math.abs(amount),
+          description,
+          category: inferCostCategory(description, amount < 0 ? "income" : "expense"),
+          paid_by: "Nic",
+          participants: [...workPeople],
+          from_person: "",
+          to_person: "",
+          historical_only: true,
+          notes: "Imported from raw historical paste",
+          created_at: now,
+          updated_at: now,
+        };
+      })
+      .filter(Boolean);
+
+    if (importedEntries.length === 0) {
+      setCostSyncStatus({ state: "error", message: "No valid lines found. Use: description<TAB>amount" });
+      return;
+    }
+
+    setCostState((prev) => ({ entries: [...importedEntries, ...(prev.entries || [])] }));
+    setCostSyncStatus({ state: "success", message: `Imported ${importedEntries.length} historical entries with categories.` });
+  };
+
   return (
     <div className="page">
       <main className="layout layout-stack">
@@ -1692,6 +1918,7 @@ export default function App() {
               { id: "gas", label: "Gas" },
               { id: "booking", label: "Booking" },
               { id: "costs", label: "Costs" },
+              { id: "historical", label: "Historical" },
               { id: "work", label: "Work" },
               { id: "insights", label: "Insights" },
               { id: "accounting", label: "Accounting" },
@@ -2192,7 +2419,13 @@ export default function App() {
                 </label>
                 <label className="field">
                   <span>Category</span>
-                  <input name="category" value={costForm.category} onChange={handleCostFormChange} />
+                  <select name="category" value={costForm.category} onChange={handleCostFormChange}>
+                    {costCategories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.label}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 {costForm.type === "transfer" ? (
                   <div className="inline-grid">
@@ -2265,6 +2498,9 @@ export default function App() {
                   <button className="submit" type="submit">
                     Add cost entry
                   </button>
+                  <button className="cancel" type="button" onClick={handleImportHistoricalDataset}>
+                    Import raw lines
+                  </button>
                 </div>
               </form>
               {costSyncStatus.state !== "idle" && <div className={`status ${costSyncStatus.state}`}>{costSyncStatus.message}</div>}
@@ -2289,6 +2525,68 @@ export default function App() {
                   <p className="summary-value">CHF {costSummary.netProjectCost.toFixed(2)}</p>
                   <p className="summary-hint">{costSummary.historicalCount} historical-only entries flagged</p>
                 </article>
+              </div>
+              <div className="inline-grid two-col">
+                <label className="field">
+                  <span>Filter year</span>
+                  <select name="year" value={costFilters.year} onChange={handleCostFilterChange}>
+                    <option value="all">All years</option>
+                    {costYearOptions.map((year) => (
+                      <option key={year} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Filter category</span>
+                  <select name="category" value={costFilters.category} onChange={handleCostFilterChange}>
+                    <option value="all">All categories</option>
+                    {costCategories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Filter person</span>
+                  <select name="person" value={costFilters.person} onChange={handleCostFilterChange}>
+                    <option value="all">All people</option>
+                    {workPeople.map((person) => (
+                      <option key={person} value={person}>
+                        {person}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Filter type</span>
+                  <select name="type" value={costFilters.type} onChange={handleCostFilterChange}>
+                    <option value="all">All types</option>
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
+                    <option value="transfer">Transfer</option>
+                  </select>
+                </label>
+              </div>
+              <div className="chart-list">
+                {categoryTotals.length === 0 ? (
+                  <p className="subtitle">No category totals for the selected filters.</p>
+                ) : (
+                  categoryTotals.slice(0, 8).map((item) => {
+                    const maxValue = Math.max(...categoryTotals.map((row) => row.amount), 1);
+                    return (
+                      <div key={item.category} className="chart-row">
+                        <span className="chart-month">{categoryLabelMap[item.category] || item.category}</span>
+                        <div className="chart-track">
+                          <div className="chart-bar" style={{ width: `${(item.amount / maxValue) * 100}%` }} />
+                        </div>
+                        <span className="chart-value">CHF {item.amount.toFixed(2)}</span>
+                      </div>
+                    );
+                  })
+                )}
               </div>
               <div className="table-wrap">
                 <table>
@@ -2323,19 +2621,19 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedCostEntries.length === 0 ? (
+                    {filteredCostEntries.length === 0 ? (
                       <tr>
                         <td colSpan="8" className="empty-cell">
                           No cost entries yet.
                         </td>
                       </tr>
                     ) : (
-                      sortedCostEntries.map((entry) => (
+                      filteredCostEntries.map((entry) => (
                         <tr key={entry.id}>
                           <td>{entry.date}</td>
                           <td>{entry.type}</td>
                           <td>{entry.description}</td>
-                          <td>{entry.category}</td>
+                          <td>{categoryLabelMap[entry.category] || entry.category}</td>
                           <td>{Number(entry.amount_chf).toFixed(2)}</td>
                           <td>
                             {entry.type === "transfer"
@@ -2353,6 +2651,48 @@ export default function App() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeView === "historical" && (
+          <div className="panel-grid">
+            <section className="card">
+              <header>
+                <p className="eyebrow">History</p>
+                <h1>Historical costs</h1>
+                <p className="subtitle">Simple yearly totals and category distribution from imported historical rows.</p>
+              </header>
+              <div className="summary-grid compact-summary-grid">
+                <article className="summary-card compact-summary-card">
+                  <p className="summary-label">Historical entries</p>
+                  <p className="summary-value">{costSummary.historicalCount}</p>
+                </article>
+                <article className="summary-card compact-summary-card">
+                  <p className="summary-label">Historical total</p>
+                  <p className="summary-value">
+                    CHF {historicalYearTotals.reduce((sum, item) => sum + item.amount, 0).toFixed(2)}
+                  </p>
+                </article>
+              </div>
+              <div className="chart-list">
+                {historicalYearTotals.length === 0 ? (
+                  <p className="subtitle">No historical rows yet. Use “Import raw lines” in the Costs view.</p>
+                ) : (
+                  historicalYearTotals.map((item) => {
+                    const maxValue = Math.max(...historicalYearTotals.map((row) => row.amount), 1);
+                    return (
+                      <div key={item.year} className="chart-row">
+                        <span className="chart-month">{item.year}</span>
+                        <div className="chart-track">
+                          <div className="chart-bar" style={{ width: `${(item.amount / maxValue) * 100}%` }} />
+                        </div>
+                        <span className="chart-value">CHF {item.amount.toFixed(2)}</span>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </section>
           </div>
