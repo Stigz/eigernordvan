@@ -198,6 +198,12 @@ resource "aws_apigatewayv2_route" "trips_route" {
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 
+resource "aws_apigatewayv2_route" "trip_open_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /trip/open"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
 resource "aws_apigatewayv2_route" "trip_update_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "PUT /trip/{id}"
@@ -240,6 +246,18 @@ resource "aws_apigatewayv2_route" "bookings_delete_route" {
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 
+resource "aws_apigatewayv2_route" "fuel_create_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "POST /fuel"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "fuel_list_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /fuel"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
 resource "aws_apigatewayv2_route" "work_get_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "GET /work"
@@ -249,6 +267,18 @@ resource "aws_apigatewayv2_route" "work_get_route" {
 resource "aws_apigatewayv2_route" "work_put_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "PUT /work"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "costs_get_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /costs"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "costs_put_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "PUT /costs"
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 
