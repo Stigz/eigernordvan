@@ -43,6 +43,16 @@ type openTripResponse struct {
 	StartKM   float64 `json:"start_km"`
 }
 
+type personContext struct {
+	Name              string   `json:"name"`
+	LastTripStartKM   *float64 `json:"last_trip_start_km,omitempty"`
+	LastTripEndKM     *float64 `json:"last_trip_end_km,omitempty"`
+	HasOpenTrip       bool     `json:"has_open_trip"`
+	OpenTripStartKM   *float64 `json:"open_trip_start_km,omitempty"`
+	LastFuelOdometer  *float64 `json:"last_fuel_odometer_km,omitempty"`
+	LastActivityAtUTC string   `json:"last_activity_at_utc,omitempty"`
+}
+
 type tripRecord struct {
 	ID          string  `json:"id"`
 	Timestamp   string  `json:"timestamp"`
@@ -207,6 +217,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 	case http.MethodGet:
 		if path == "/trips" {
 			return h.handleListTrips(ctx)
+		}
+		if path == "/intake/context" {
+			return h.handleGetIntakeContext(ctx)
 		}
 		if path == "/trip/open" {
 			return h.handleGetOpenTrip(ctx)
@@ -474,6 +487,35 @@ func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewa
 		"event_type":    "fuel_manual",
 		"fuel_cost_chf": payload.FuelCostCHF,
 		"confirmation":  "Fuel event logged.",
+	}), nil
+}
+
+func (h *handler) handleGetIntakeContext(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
+	events, err := h.listEvents(ctx)
+	if err != nil {
+		log.Printf("scan failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch intake context"), nil
+	}
+
+	openTrip, err := h.getLatestOpenTrip(ctx)
+	if err != nil {
+		log.Printf("scan open trip failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch intake context"), nil
+	}
+
+	contextByPerson, suggestedStartKM := buildIntakeContext(events, openTrip)
+	people := make([]personContext, 0, len(contextByPerson))
+	for _, person := range contextByPerson {
+		people = append(people, person)
+	}
+	sort.Slice(people, func(i, j int) bool {
+		return strings.ToLower(people[i].Name) < strings.ToLower(people[j].Name)
+	})
+
+	return h.respond(http.StatusOK, map[string]any{
+		"people":             people,
+		"open_trip":          openTrip,
+		"suggested_start_km": suggestedStartKM,
 	}), nil
 }
 
@@ -1467,6 +1509,63 @@ func validateTripUpdate(startKM float64, endKM float64, trips []tripRecord, curr
 	}
 
 	return nil
+}
+
+func buildIntakeContext(events []eventRecord, openTrip *tripRecord) (map[string]personContext, *float64) {
+	people := map[string]personContext{}
+	var latestTripEndKM *float64
+	var latestTripEndAt time.Time
+
+	for _, event := range events {
+		name := strings.TrimSpace(event.UserName)
+		if name == "" {
+			continue
+		}
+
+		person := people[name]
+		person.Name = name
+		eventTime, _ := time.Parse(time.RFC3339, event.Timestamp)
+		if person.LastActivityAtUTC == "" || event.Timestamp > person.LastActivityAtUTC {
+			person.LastActivityAtUTC = event.Timestamp
+		}
+
+		if event.EventType == "trip_manual" {
+			if event.StartKM != nil {
+				v := *event.StartKM
+				person.LastTripStartKM = &v
+			}
+			if event.EndKM != nil {
+				v := *event.EndKM
+				person.LastTripEndKM = &v
+				if latestTripEndKM == nil || eventTime.After(latestTripEndAt) {
+					latestTripEndKM = &v
+					latestTripEndAt = eventTime
+				}
+			}
+		}
+		if event.EventType == "fuel_manual" && event.OdometerKM != nil {
+			v := *event.OdometerKM
+			person.LastFuelOdometer = &v
+		}
+		people[name] = person
+	}
+
+	if openTrip != nil {
+		name := strings.TrimSpace(openTrip.UserName)
+		if name != "" {
+			person := people[name]
+			person.Name = name
+			person.HasOpenTrip = true
+			v := openTrip.StartKM
+			person.OpenTripStartKM = &v
+			if person.LastActivityAtUTC == "" || openTrip.Timestamp > person.LastActivityAtUTC {
+				person.LastActivityAtUTC = openTrip.Timestamp
+			}
+			people[name] = person
+		}
+	}
+
+	return people, latestTripEndKM
 }
 
 func (h *handler) getLatestOpenTrip(ctx context.Context) (*tripRecord, error) {

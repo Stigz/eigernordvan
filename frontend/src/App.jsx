@@ -785,6 +785,7 @@ const VanAccountingSandbox = () => {
 
 export default function App() {
   const [activeView, setActiveView] = useState("km");
+  const [showQuickIntake, setShowQuickIntake] = useState(true);
   const [form, setForm] = useState(initialForm);
   const [status, setStatus] = useState({ state: "idle", message: "" });
   const [trips, setTrips] = useState([]);
@@ -819,6 +820,12 @@ export default function App() {
   const [costFilters, setCostFilters] = useState({ year: "all", category: "all", person: "all", type: "all" });
   const [costSyncStatus, setCostSyncStatus] = useState({ state: "idle", message: "" });
   const [isCostLoaded, setIsCostLoaded] = useState(false);
+  const [intakeContext, setIntakeContext] = useState({ people: [], open_trip: null, suggested_start_km: null });
+  const [quickIntakePerson, setQuickIntakePerson] = useState("");
+  const [quickIntakeAction, setQuickIntakeAction] = useState("km");
+  const [quickIntakeKmMode, setQuickIntakeKmMode] = useState("end");
+  const [quickIntakeForm, setQuickIntakeForm] = useState({ start_km: "", end_km: "", liters: "", cost_chf: "", odometer_km: "" });
+  const [quickIntakeStatus, setQuickIntakeStatus] = useState({ state: "idle", message: "" });
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
   const latestEndKm = useMemo(
@@ -1308,6 +1315,45 @@ export default function App() {
     }
   };
 
+  const loadFuelEntries = async () => {
+    if (!apiBaseUrl) {
+      return;
+    }
+    try {
+      setGasTableState({ state: "loading", message: "Loading fuel entries..." });
+      const response = await fetch(`${apiBaseUrl}/fuel`);
+      const payload = await response.json();
+      if (!response.ok) {
+        setGasTableState({ state: "error", message: payload.error || "Could not load fuel entries." });
+        return;
+      }
+      setGasEntries(Array.isArray(payload.items) ? payload.items : []);
+      setGasTableState({ state: "success", message: "" });
+    } catch (_error) {
+      setGasTableState({ state: "error", message: "Network error while loading fuel history." });
+    }
+  };
+
+  const loadIntakeContext = async () => {
+    if (!apiBaseUrl) {
+      return;
+    }
+    try {
+      const response = await fetch(`${apiBaseUrl}/intake/context`);
+      const payload = await response.json();
+      if (!response.ok) {
+        return;
+      }
+      setIntakeContext({
+        people: Array.isArray(payload.people) ? payload.people : [],
+        open_trip: payload.open_trip || null,
+        suggested_start_km: Number.isFinite(Number(payload.suggested_start_km)) ? Number(payload.suggested_start_km) : null,
+      });
+    } catch (_error) {
+      // keep best-effort intake context silent
+    }
+  };
+
   const loadBookings = async (from, to) => {
     if (!apiBaseUrl) {
       setBookingTableState({
@@ -1339,6 +1385,8 @@ export default function App() {
   useEffect(() => {
     loadTrips();
     loadOpenTrip();
+    loadFuelEntries();
+    loadIntakeContext();
   }, []);
 
   useEffect(() => {
@@ -1378,8 +1426,16 @@ export default function App() {
   }, [trips]);
 
   useEffect(() => {
+    if (openTrip) {
+      setQuickIntakeKmMode("end");
+      setQuickIntakeForm((prev) => ({ ...prev, start_km: String(openTrip.start_km.toFixed(1)) }));
+    } else if (latestEndKm !== null) {
+      setQuickIntakeForm((prev) => ({ ...prev, start_km: prev.start_km || String(latestEndKm.toFixed(1)) }));
+    }
+  }, [openTrip, latestEndKm]);
+
+  useEffect(() => {
     saveFuelEntries(gasEntries);
-    setGasTableState({ state: "success", message: "" });
   }, [gasEntries]);
 
   useEffect(() => {
@@ -1624,28 +1680,48 @@ export default function App() {
     }
   };
 
-  const handleGasSubmit = (event) => {
+  const handleGasSubmit = async (event) => {
     event.preventDefault();
-
     const entry = {
-      id: crypto.randomUUID(),
       user_name: gasForm.user_name.trim(),
       liters: Number(gasForm.liters),
       cost_chf: Number(gasForm.cost_chf),
       odometer_km: Number(gasForm.odometer_km),
-      timestamp: new Date().toISOString(),
     };
 
     if (!entry.user_name || entry.liters <= 0 || entry.cost_chf <= 0 || entry.odometer_km < 0) {
       setGasStatus({ state: "error", message: "Enter valid name, liters, cost, and odometer values." });
       return;
     }
-
-    setGasTableState({ state: "loading", message: "Updating fuel history..." });
-    setGasEntries((prev) => [entry, ...prev]);
-    upsertProfile(entry.user_name);
-    setGasStatus({ state: "success", message: "Fuel entry added." });
-    setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name }));
+    if (!apiBaseUrl) {
+      setGasStatus({ state: "error", message: "Missing API URL configuration." });
+      return;
+    }
+    setGasStatus({ state: "loading", message: "Saving fuel entry..." });
+    try {
+      const response = await fetch(`${apiBaseUrl}/fuel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_name: entry.user_name,
+          liters: entry.liters,
+          fuel_cost_chf: entry.cost_chf,
+          odometer_km: entry.odometer_km,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setGasStatus({ state: "error", message: payload.error || "Could not save fuel entry." });
+        return;
+      }
+      upsertProfile(entry.user_name);
+      setGasStatus({ state: "success", message: "Fuel entry added." });
+      setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name }));
+      await loadFuelEntries();
+      await loadIntakeContext();
+    } catch (_error) {
+      setGasStatus({ state: "error", message: "Network error while saving fuel entry." });
+    }
   };
 
   const handleEdit = (trip) => {
@@ -1687,10 +1763,8 @@ export default function App() {
     }
   };
 
-  const handleDeleteGas = (entryId) => {
-    setGasTableState({ state: "loading", message: "Updating fuel history..." });
-    setGasEntries((prev) => prev.filter((entry) => entry.id !== entryId));
-    setGasStatus({ state: "success", message: "Fuel entry deleted." });
+  const handleDeleteGas = (_entryId) => {
+    setGasStatus({ state: "error", message: "Fuel deletion is not available yet. Add a correction entry instead." });
   };
 
   const handleAddWorkItem = (event) => {
@@ -2006,8 +2080,241 @@ export default function App() {
     setCostSyncStatus({ state: "success", message: `Imported ${importedEntries.length} historical entries with categories.` });
   };
 
+  const submitQuickIntake = async (event) => {
+    event.preventDefault();
+    const normalizedPerson = quickIntakePerson.trim();
+    if (!normalizedPerson) {
+      setQuickIntakeStatus({ state: "error", message: "Please choose or enter a person first." });
+      return;
+    }
+    if (!apiBaseUrl) {
+      setQuickIntakeStatus({ state: "error", message: "Missing API URL configuration." });
+      return;
+    }
+
+    if (quickIntakeAction === "gas") {
+      const liters = Number(quickIntakeForm.liters);
+      const cost = Number(quickIntakeForm.cost_chf);
+      const odometer = Number(quickIntakeForm.odometer_km);
+      if (!(liters > 0 && cost > 0 && odometer >= 0)) {
+        setQuickIntakeStatus({ state: "error", message: "For gas, enter liters, total cost, and odometer." });
+        return;
+      }
+      setQuickIntakeStatus({ state: "loading", message: "Saving gas entry..." });
+      try {
+        const response = await fetch(`${apiBaseUrl}/fuel`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_name: normalizedPerson,
+            liters,
+            fuel_cost_chf: cost,
+            odometer_km: odometer,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          setQuickIntakeStatus({ state: "error", message: payload.error || "Could not save gas entry." });
+          return;
+        }
+      } catch (_error) {
+        setQuickIntakeStatus({ state: "error", message: "Network error while saving gas entry." });
+        return;
+      }
+      upsertProfile(normalizedPerson);
+      setQuickIntakeStatus({ state: "success", message: "Saved gas entry. Opening main page..." });
+      await loadFuelEntries();
+      await loadIntakeContext();
+      setTimeout(() => setShowQuickIntake(false), 400);
+      return;
+    }
+
+    const startKm = parseOptionalNumberInput(quickIntakeForm.start_km);
+    const endKm = parseOptionalNumberInput(quickIntakeForm.end_km);
+    const hasOpenTrip = Boolean(openTrip);
+    if (quickIntakeKmMode === "start" && startKm === null) {
+      setQuickIntakeStatus({ state: "error", message: "Enter a start odometer to log trip start." });
+      return;
+    }
+    if (quickIntakeKmMode === "end" && endKm === null) {
+      setQuickIntakeStatus({ state: "error", message: "Enter an end odometer to close trip." });
+      return;
+    }
+    if (!hasOpenTrip && quickIntakeKmMode === "end" && startKm === null) {
+      setQuickIntakeStatus({
+        state: "error",
+        message: "No open trip found. Enter start + end or switch to start-only mode.",
+      });
+      return;
+    }
+
+    setQuickIntakeStatus({ state: "loading", message: "Saving KM entry..." });
+    try {
+      const response = await fetch(`${apiBaseUrl}/trip`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_name: normalizedPerson,
+          ...(quickIntakeKmMode === "start" ? { start_km: startKm } : {}),
+          ...(quickIntakeKmMode === "end" ? { end_km: endKm } : {}),
+          ...(quickIntakeKmMode === "both" ? { start_km: startKm, end_km: endKm } : {}),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setQuickIntakeStatus({ state: "error", message: payload.error || "Could not save KM entry." });
+        return;
+      }
+      upsertProfile(normalizedPerson);
+      setQuickIntakeStatus({
+        state: "success",
+        message: payload.is_open ? "Trip start saved. Opening main page..." : "Trip saved. Opening main page...",
+      });
+      await loadTrips();
+      await loadOpenTrip();
+      await loadIntakeContext();
+      setTimeout(() => setShowQuickIntake(false), 400);
+    } catch (_error) {
+      setQuickIntakeStatus({ state: "error", message: "Network error while saving KM entry." });
+    }
+  };
+
   return (
     <div className="page">
+      {showQuickIntake && (
+        <section className="quick-intake-shell">
+          <div className="quick-intake-card">
+            <button type="button" className="quick-intake-close" onClick={() => setShowQuickIntake(false)} aria-label="Close quick intake">
+              ×
+            </button>
+            <p className="quick-intake-hint">Click × to go to the main page.</p>
+            <h2>Quick trip / gas entry</h2>
+            <p className="subtitle">For phones and computers: simple steps, big buttons, clear errors.</p>
+            <form className="form" onSubmit={submitQuickIntake}>
+              <label className="field">
+                <span>Step 1: Person</span>
+                <input
+                  type="text"
+                  list="quick-intake-people"
+                  value={quickIntakePerson}
+                  onChange={(event) => setQuickIntakePerson(event.target.value)}
+                  placeholder="Pick existing or type new name"
+                  required
+                />
+                <datalist id="quick-intake-people">
+                  {[...new Set([...profiles, ...(intakeContext.people || []).map((person) => person.name)])].map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              </label>
+
+              <label className="field">
+                <span>Step 2: What do you want to log?</span>
+                <select
+                  value={quickIntakeAction}
+                  onChange={(event) => {
+                    setQuickIntakeAction(event.target.value);
+                  }}
+                >
+                  <option value="km">KM trip</option>
+                  <option value="gas">Gas fill</option>
+                </select>
+              </label>
+
+              {quickIntakeAction === "km" ? (
+                <>
+                  <label className="field">
+                    <span>Step 3: KM mode</span>
+                    <select value={quickIntakeKmMode} onChange={(event) => setQuickIntakeKmMode(event.target.value)}>
+                      <option value="end">Close trip (end KM)</option>
+                      <option value="start">Start trip only</option>
+                      <option value="both">Start + end together</option>
+                    </select>
+                  </label>
+                  {(quickIntakeKmMode === "start" || quickIntakeKmMode === "both") && (
+                    <label className="field">
+                      <span>Start KM</span>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="0.1"
+                        value={quickIntakeForm.start_km}
+                        onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, start_km: event.target.value }))}
+                        placeholder={
+                          intakeContext?.open_trip?.start_km
+                            ? `Open trip start: ${Number(intakeContext.open_trip.start_km).toFixed(1)}`
+                            : intakeContext?.suggested_start_km !== null
+                              ? `Suggested: ${Number(intakeContext.suggested_start_km).toFixed(1)}`
+                              : "Enter start KM"
+                        }
+                      />
+                    </label>
+                  )}
+                  {(quickIntakeKmMode === "end" || quickIntakeKmMode === "both") && (
+                    <label className="field">
+                      <span>End KM</span>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="0.1"
+                        value={quickIntakeForm.end_km}
+                        onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, end_km: event.target.value }))}
+                        placeholder="Enter end KM"
+                      />
+                    </label>
+                  )}
+                  {openTrip && <p className="subtitle">Open trip detected from {openTrip.start_km.toFixed(1)} km. End KM is suggested first.</p>}
+                </>
+              ) : (
+                <>
+                  <label className="field">
+                    <span>Liters</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={quickIntakeForm.liters}
+                      onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, liters: event.target.value }))}
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Total cost (CHF)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={quickIntakeForm.cost_chf}
+                      onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, cost_chf: event.target.value }))}
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Odometer KM</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={quickIntakeForm.odometer_km}
+                      onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, odometer_km: event.target.value }))}
+                      required
+                    />
+                  </label>
+                </>
+              )}
+
+              <div className="form-actions">
+                <button type="submit" className="submit">
+                  Save & open main page
+                </button>
+              </div>
+            </form>
+            {quickIntakeStatus.state !== "idle" && <div className={`status ${quickIntakeStatus.state}`}>{quickIntakeStatus.message}</div>}
+          </div>
+        </section>
+      )}
       <main className="layout layout-stack">
         <section className="card view-switcher-card">
           <p className="eyebrow">Views</p>
