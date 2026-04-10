@@ -18,6 +18,48 @@ body {
   align-items: flex-start;
   justify-content: center;
   padding: 24px 16px 48px;
+  position: relative;
+}
+
+.quick-intake-shell {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  z-index: 40;
+  padding: 14px;
+  display: grid;
+  place-items: center;
+}
+
+.quick-intake-card {
+  width: min(620px, 100%);
+  max-height: 92vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+  position: relative;
+}
+
+.quick-intake-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.quick-intake-hint {
+  margin: 0 40px 6px 0;
+  font-size: 13px;
+  color: #475569;
 }
 
 .layout {
