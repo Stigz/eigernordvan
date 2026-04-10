@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { buildKmModeOptions, collectRecentPeople } from "./quickIntakeFlow";
 
 const apiUrl = import.meta.env.VITE_API_URL;
 
@@ -824,6 +825,7 @@ export default function App() {
   const [quickIntakePerson, setQuickIntakePerson] = useState("");
   const [quickIntakeAction, setQuickIntakeAction] = useState("km");
   const [quickIntakeKmMode, setQuickIntakeKmMode] = useState("end");
+  const [quickIntakeStage, setQuickIntakeStage] = useState("person");
   const [quickIntakeForm, setQuickIntakeForm] = useState({ start_km: "", end_km: "", liters: "", cost_chf: "", odometer_km: "" });
   const [quickIntakeStatus, setQuickIntakeStatus] = useState({ state: "idle", message: "" });
 
@@ -832,6 +834,11 @@ export default function App() {
     () => (trips.length === 0 ? null : Math.max(...trips.map((trip) => trip.end_km))),
     [trips],
   );
+  const quickIntakePeople = useMemo(
+    () => collectRecentPeople({ profiles, intakePeople: intakeContext.people, trips, gasEntries }),
+    [profiles, intakeContext.people, trips, gasEntries],
+  );
+  const kmModeOptions = useMemo(() => buildKmModeOptions(Boolean(openTrip)), [openTrip]);
 
   const tableTrips = useMemo(
     () =>
@@ -2189,127 +2196,208 @@ export default function App() {
             </button>
             <p className="quick-intake-hint">Click × to go to the main page.</p>
             <h2>Quick trip / gas entry</h2>
-            <p className="subtitle">For phones and computers: simple steps, big buttons, clear errors.</p>
+            <p className="subtitle">One decision at a time. The next options adapt to what you click.</p>
             <form className="form" onSubmit={submitQuickIntake}>
-              <label className="field">
-                <span>Step 1: Person</span>
-                <input
-                  type="text"
-                  list="quick-intake-people"
-                  value={quickIntakePerson}
-                  onChange={(event) => setQuickIntakePerson(event.target.value)}
-                  placeholder="Pick existing or type new name"
-                  required
-                />
-                <datalist id="quick-intake-people">
-                  {[...new Set([...profiles, ...(intakeContext.people || []).map((person) => person.name)])].map((name) => (
-                    <option key={name} value={name} />
-                  ))}
-                </datalist>
-              </label>
-
-              <label className="field">
-                <span>Step 2: What do you want to log?</span>
-                <select
-                  value={quickIntakeAction}
-                  onChange={(event) => {
-                    setQuickIntakeAction(event.target.value);
-                  }}
-                >
-                  <option value="km">KM trip</option>
-                  <option value="gas">Gas fill</option>
-                </select>
-              </label>
-
-              {quickIntakeAction === "km" ? (
+              {quickIntakeStage === "person" && (
                 <>
+                  <p className="eyebrow">Step 1</p>
+                  <h3 className="quick-intake-step-title">Who is logging?</h3>
+                  <div className="quick-choice-grid">
+                    {quickIntakePeople.slice(0, 8).map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className={`quick-choice ${quickIntakePerson === name ? "active" : ""}`}
+                        onClick={() => {
+                          setQuickIntakePerson(name);
+                          setQuickIntakeStage("action");
+                          setQuickIntakeStatus({ state: "idle", message: "" });
+                        }}
+                      >
+                        {name}
+                      </button>
+                    ))}
+                  </div>
                   <label className="field">
-                    <span>Step 3: KM mode</span>
-                    <select value={quickIntakeKmMode} onChange={(event) => setQuickIntakeKmMode(event.target.value)}>
-                      <option value="end">Close trip (end KM)</option>
-                      <option value="start">Start trip only</option>
-                      <option value="both">Start + end together</option>
-                    </select>
+                    <span>Or type a new person</span>
+                    <input
+                      type="text"
+                      value={quickIntakePerson}
+                      onChange={(event) => setQuickIntakePerson(event.target.value)}
+                      placeholder="Type name"
+                      required
+                    />
                   </label>
-                  {(quickIntakeKmMode === "start" || quickIntakeKmMode === "both") && (
-                    <label className="field">
-                      <span>Start KM</span>
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        step="0.1"
-                        value={quickIntakeForm.start_km}
-                        onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, start_km: event.target.value }))}
-                        placeholder={
-                          intakeContext?.open_trip?.start_km
-                            ? `Open trip start: ${Number(intakeContext.open_trip.start_km).toFixed(1)}`
-                            : intakeContext?.suggested_start_km !== null
-                              ? `Suggested: ${Number(intakeContext.suggested_start_km).toFixed(1)}`
-                              : "Enter start KM"
+                  <div className="form-actions">
+                    <button
+                      type="button"
+                      className="submit"
+                      onClick={() => {
+                        if (!quickIntakePerson.trim()) {
+                          setQuickIntakeStatus({ state: "error", message: "Pick or type a person first." });
+                          return;
                         }
-                      />
-                    </label>
-                  )}
-                  {(quickIntakeKmMode === "end" || quickIntakeKmMode === "both") && (
-                    <label className="field">
-                      <span>End KM</span>
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        step="0.1"
-                        value={quickIntakeForm.end_km}
-                        onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, end_km: event.target.value }))}
-                        placeholder="Enter end KM"
-                      />
-                    </label>
-                  )}
-                  {openTrip && <p className="subtitle">Open trip detected from {openTrip.start_km.toFixed(1)} km. End KM is suggested first.</p>}
-                </>
-              ) : (
-                <>
-                  <label className="field">
-                    <span>Liters</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={quickIntakeForm.liters}
-                      onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, liters: event.target.value }))}
-                      required
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Total cost (CHF)</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={quickIntakeForm.cost_chf}
-                      onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, cost_chf: event.target.value }))}
-                      required
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Odometer KM</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={quickIntakeForm.odometer_km}
-                      onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, odometer_km: event.target.value }))}
-                      required
-                    />
-                  </label>
+                        setQuickIntakeStage("action");
+                        setQuickIntakeStatus({ state: "idle", message: "" });
+                      }}
+                    >
+                      Continue
+                    </button>
+                  </div>
                 </>
               )}
 
-              <div className="form-actions">
-                <button type="submit" className="submit">
-                  Save & open main page
-                </button>
-              </div>
+              {quickIntakeStage === "action" && (
+                <>
+                  <p className="eyebrow">Step 2</p>
+                  <h3 className="quick-intake-step-title">What should we log for {quickIntakePerson}?</h3>
+                  <div className="quick-choice-grid two-up">
+                    <button
+                      type="button"
+                      className={`quick-choice ${quickIntakeAction === "km" ? "active" : ""}`}
+                      onClick={() => {
+                        setQuickIntakeAction("km");
+                        setQuickIntakeStage("kmMode");
+                      }}
+                    >
+                      <strong>New drive</strong>
+                      <small>Track KM start/end flow</small>
+                    </button>
+                    <button
+                      type="button"
+                      className={`quick-choice ${quickIntakeAction === "gas" ? "active" : ""}`}
+                      onClick={() => {
+                        setQuickIntakeAction("gas");
+                        setQuickIntakeStage("details");
+                      }}
+                    >
+                      <strong>Tank fill</strong>
+                      <small>Track liters + CHF + odometer</small>
+                    </button>
+                  </div>
+                  <div className="form-actions">
+                    <button type="button" className="cancel" onClick={() => setQuickIntakeStage("person")}>
+                      Back
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {quickIntakeStage === "kmMode" && (
+                <>
+                  <p className="eyebrow">Step 3</p>
+                  <h3 className="quick-intake-step-title">Choose KM flow</h3>
+                  <div className="quick-choice-grid">
+                    {kmModeOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`quick-choice ${quickIntakeKmMode === option.id ? "active" : ""}`}
+                        onClick={() => {
+                          setQuickIntakeKmMode(option.id);
+                          setQuickIntakeStage("details");
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                        <small>{option.description}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="form-actions">
+                    <button type="button" className="cancel" onClick={() => setQuickIntakeStage("action")}>
+                      Back
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {quickIntakeStage === "details" && (
+                <>
+                  {quickIntakeAction === "km" ? (
+                    <>
+                      {(quickIntakeKmMode === "start" || quickIntakeKmMode === "both") && (
+                        <label className="field">
+                          <span>Start KM</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="0"
+                            step="0.1"
+                            value={quickIntakeForm.start_km}
+                            onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, start_km: event.target.value }))}
+                            placeholder={
+                              intakeContext?.suggested_start_km !== null ? `Suggested: ${Number(intakeContext.suggested_start_km).toFixed(1)}` : "Enter start KM"
+                            }
+                          />
+                        </label>
+                      )}
+                      {(quickIntakeKmMode === "end" || quickIntakeKmMode === "both") && (
+                        <label className="field">
+                          <span>End KM</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="0"
+                            step="0.1"
+                            value={quickIntakeForm.end_km}
+                            onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, end_km: event.target.value }))}
+                            placeholder="Enter end KM"
+                          />
+                        </label>
+                      )}
+                      {openTrip && <p className="subtitle">Open drive from {openTrip.start_km.toFixed(1)} km detected.</p>}
+                    </>
+                  ) : (
+                    <>
+                      <label className="field">
+                        <span>Liters</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={quickIntakeForm.liters}
+                          onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, liters: event.target.value }))}
+                          required
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Total cost (CHF)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={quickIntakeForm.cost_chf}
+                          onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, cost_chf: event.target.value }))}
+                          required
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Odometer KM</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={quickIntakeForm.odometer_km}
+                          onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, odometer_km: event.target.value }))}
+                          required
+                        />
+                      </label>
+                    </>
+                  )}
+                  <div className="form-actions">
+                    <button
+                      type="button"
+                      className="cancel"
+                      onClick={() => setQuickIntakeStage(quickIntakeAction === "km" ? "kmMode" : "action")}
+                    >
+                      Back
+                    </button>
+                    <button type="submit" className="submit">
+                      Save & open main page
+                    </button>
+                  </div>
+                </>
+              )}
             </form>
             {quickIntakeStatus.state !== "idle" && <div className={`status ${quickIntakeStatus.state}`}>{quickIntakeStatus.message}</div>}
           </div>
