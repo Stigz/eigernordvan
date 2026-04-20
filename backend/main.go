@@ -243,6 +243,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if strings.HasPrefix(path, "/trip/") {
 			return h.handleUpdateTrip(ctx, request, strings.TrimPrefix(path, "/trip/"))
 		}
+		if strings.HasPrefix(path, "/fuel/") {
+			return h.handleUpdateFuel(ctx, request, strings.TrimPrefix(path, "/fuel/"))
+		}
 		if strings.HasPrefix(path, "/bookings/") {
 			return h.handleUpdateBooking(ctx, request, strings.TrimPrefix(path, "/bookings/"))
 		}
@@ -622,6 +625,50 @@ func (h *handler) handleDeleteTrip(ctx context.Context, id string) (events.APIGa
 	}
 
 	return h.respond(http.StatusOK, map[string]string{"status": "deleted"}), nil
+}
+
+func (h *handler) handleUpdateFuel(ctx context.Context, request events.APIGatewayV2HTTPRequest, id string) (events.APIGatewayV2HTTPResponse, error) {
+	if strings.TrimSpace(id) == "" {
+		return h.respondError(http.StatusBadRequest, "fuel id is required"), nil
+	}
+
+	var payload fuelRequest
+	if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+		return h.respondError(http.StatusBadRequest, "invalid json payload"), nil
+	}
+
+	if err := validateFuel(payload); err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+
+	now := time.Now().UTC()
+	item := map[string]types.AttributeValue{
+		"id":             &types.AttributeValueMemberS{Value: id},
+		"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+		"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
+		"odometer_km":    &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.OdometerKM)},
+		"liters":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.Liters)},
+		"fuel_cost_chf":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.FuelCostCHF)},
+		"event_type":     &types.AttributeValueMemberS{Value: "fuel_manual_updated"},
+		"ledger_comment": &types.AttributeValueMemberS{Value: "Fuel entry updated to resolve data mistakes."},
+	}
+
+	_, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &h.tableName,
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("update fuel item failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to update fuel event"), nil
+	}
+
+	return h.respond(http.StatusOK, map[string]any{
+		"id":            id,
+		"timestamp":     now.Format(time.RFC3339),
+		"event_type":    "fuel_manual_updated",
+		"fuel_cost_chf": payload.FuelCostCHF,
+		"confirmation":  "Fuel event updated.",
+	}), nil
 }
 
 func (h *handler) listBookings(ctx context.Context) ([]bookingRecord, error) {
