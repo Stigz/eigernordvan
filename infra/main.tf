@@ -258,6 +258,12 @@ resource "aws_apigatewayv2_route" "fuel_list_route" {
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 
+resource "aws_apigatewayv2_route" "fuel_update_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "PUT /fuel/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
 resource "aws_apigatewayv2_route" "work_get_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "GET /work"
