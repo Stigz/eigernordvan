@@ -195,9 +195,39 @@ func main() {
 	lambda.Start(h.handle)
 }
 
+func normalizeRoutePath(request events.APIGatewayV2HTTPRequest) string {
+	path := strings.TrimSpace(request.RawPath)
+	if path == "" {
+		path = strings.TrimSpace(request.RequestContext.HTTP.Path)
+	}
+	if path == "" {
+		return "/"
+	}
+
+	if len(path) > 1 {
+		path = strings.TrimRight(path, "/")
+		if path == "" {
+			path = "/"
+		}
+	}
+
+	stage := strings.Trim(strings.TrimSpace(request.RequestContext.Stage), "/")
+	if stage != "" {
+		prefix := "/" + stage
+		if path == prefix {
+			return "/"
+		}
+		if strings.HasPrefix(path, prefix+"/") {
+			path = strings.TrimPrefix(path, prefix)
+		}
+	}
+
+	return path
+}
+
 func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	method := request.RequestContext.HTTP.Method
-	path := request.RawPath
+	path := normalizeRoutePath(request)
 
 	if method == http.MethodOptions {
 		return h.respond(http.StatusNoContent, nil), nil
