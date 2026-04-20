@@ -806,6 +806,7 @@ export default function App() {
   const [openTrip, setOpenTrip] = useState(null);
   const [gasForm, setGasForm] = useState(initialGasForm);
   const [gasStatus, setGasStatus] = useState({ state: "idle", message: "" });
+  const [gasEditId, setGasEditId] = useState("");
   const [gasEntries, setGasEntries] = useState(() => parseFuelEntries());
   const [gasTableState, setGasTableState] = useState({ state: "loading", message: "Loading fuel entries..." });
   const [bookingForm, setBookingForm] = useState(initialBookingForm);
@@ -1699,6 +1700,7 @@ export default function App() {
 
   const handleGasSubmit = async (event) => {
     event.preventDefault();
+    const isEditingGas = Boolean(gasEditId);
     const entry = {
       user_name: gasForm.user_name.trim(),
       liters: Number(gasForm.liters),
@@ -1714,10 +1716,10 @@ export default function App() {
       setGasStatus({ state: "error", message: "Missing API URL configuration." });
       return;
     }
-    setGasStatus({ state: "loading", message: "Saving fuel entry..." });
+    setGasStatus({ state: "loading", message: isEditingGas ? "Updating fuel entry..." : "Saving fuel entry..." });
     try {
-      const response = await fetch(`${apiBaseUrl}/fuel`, {
-        method: "POST",
+      const response = await fetch(isEditingGas ? `${apiBaseUrl}/fuel/${gasEditId}` : `${apiBaseUrl}/fuel`, {
+        method: isEditingGas ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_name: entry.user_name,
@@ -1732,12 +1734,13 @@ export default function App() {
         return;
       }
       upsertProfile(entry.user_name);
-      setGasStatus({ state: "success", message: "Fuel entry added." });
+      setGasStatus({ state: "success", message: isEditingGas ? "Fuel entry updated." : "Fuel entry added." });
+      setGasEditId("");
       setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name }));
       await loadFuelEntries();
       await loadIntakeContext();
     } catch (_error) {
-      setGasStatus({ state: "error", message: "Network error while saving fuel entry." });
+      setGasStatus({ state: "error", message: `Network error while ${isEditingGas ? "updating" : "saving"} fuel entry.` });
     }
   };
 
@@ -1782,6 +1785,23 @@ export default function App() {
 
   const handleDeleteGas = (_entryId) => {
     setGasStatus({ state: "error", message: "Fuel deletion is not available yet. Add a correction entry instead." });
+  };
+
+  const handleEditGas = (entry) => {
+    setGasEditId(entry.id);
+    setGasForm({
+      user_name: entry.user_name,
+      liters: String(entry.liters.toFixed(2)),
+      cost_chf: String(entry.cost_chf.toFixed(2)),
+      odometer_km: String(entry.odometer_km.toFixed(1)),
+    });
+    setGasStatus({ state: "idle", message: "" });
+  };
+
+  const handleCancelGasEdit = () => {
+    setGasEditId("");
+    setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name }));
+    setGasStatus({ state: "idle", message: "" });
   };
 
   const handleAddWorkItem = (event) => {
@@ -2602,7 +2622,7 @@ export default function App() {
             <section className="card">
               <header>
                 <p className="eyebrow">Fuel ledger</p>
-                <h1>Log Gas Fill</h1>
+                <h1>{gasEditId ? "Edit Gas Fill" : "Log Gas Fill"}</h1>
                 <p className="subtitle">Track liters, spend, and odometer to feed efficiency insights.</p>
               </header>
               <form className="form" onSubmit={handleGasSubmit}>
@@ -2663,8 +2683,13 @@ export default function App() {
 
                 <div className="form-actions">
                   <button className="submit" type="submit">
-                    Save gas entry
+                    {gasStatus.state === "loading" ? "Saving..." : gasEditId ? "Update gas entry" : "Save gas entry"}
                   </button>
+                  {gasEditId && (
+                    <button type="button" className="ghost" onClick={handleCancelGasEdit}>
+                      Cancel edit
+                    </button>
+                  )}
                 </div>
               </form>
               {gasStatus.state !== "idle" && <div className={`status ${gasStatus.state}`}>{gasStatus.message}</div>}
@@ -2710,6 +2735,13 @@ export default function App() {
                             <td>{(entry.cost_chf / entry.liters).toFixed(2)}</td>
                             <td>
                               <div className="row-actions">
+                                <button
+                                  type="button"
+                                  className="table-btn"
+                                  onClick={() => handleEditGas(entry)}
+                                >
+                                  Edit
+                                </button>
                                 <button
                                   type="button"
                                   className="table-btn danger"
