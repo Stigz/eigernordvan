@@ -247,6 +247,32 @@ const statusToBoardColumn = {
   done: "Done",
 };
 
+const normalizeFuelEntry = (entry) => {
+  const liters = Number(entry?.liters);
+  const costCHF = Number(entry?.cost_chf ?? entry?.fuel_cost_chf);
+  const odometerKM = Number(entry?.odometer_km);
+  const id = typeof entry?.id === "string" ? entry.id : "";
+  const userName = typeof entry?.user_name === "string" ? entry.user_name.trim() : "";
+  const timestamp = typeof entry?.timestamp === "string" ? entry.timestamp : "";
+
+  if (!id || !userName || !timestamp) {
+    return null;
+  }
+  if (!Number.isFinite(liters) || !Number.isFinite(costCHF) || !Number.isFinite(odometerKM)) {
+    return null;
+  }
+
+  return {
+    ...entry,
+    id,
+    user_name: userName,
+    liters,
+    cost_chf: costCHF,
+    odometer_km: odometerKM,
+    timestamp,
+  };
+};
+
 const parseFuelEntries = () => {
   if (typeof window === "undefined") {
     return [];
@@ -259,23 +285,7 @@ const parseFuelEntries = () => {
       return [];
     }
 
-    return parsed
-      .map((entry) => ({
-        ...entry,
-        liters: Number(entry.liters),
-        cost_chf: Number(entry.cost_chf),
-        odometer_km: Number(entry.odometer_km),
-      }))
-      .filter(
-        (entry) =>
-          entry &&
-          typeof entry.id === "string" &&
-          entry.user_name &&
-          Number.isFinite(entry.liters) &&
-          Number.isFinite(entry.cost_chf) &&
-          Number.isFinite(entry.odometer_km) &&
-          entry.timestamp,
-      );
+    return parsed.map(normalizeFuelEntry).filter(Boolean);
   } catch (_error) {
     return [];
   }
@@ -1334,7 +1344,7 @@ export default function App() {
         setGasTableState({ state: "error", message: payload.error || "Could not load fuel entries." });
         return;
       }
-      setGasEntries(Array.isArray(payload.items) ? payload.items : []);
+      setGasEntries(Array.isArray(payload.items) ? payload.items.map(normalizeFuelEntry).filter(Boolean) : []);
       setGasTableState({ state: "success", message: "" });
     } catch (_error) {
       setGasTableState({ state: "error", message: "Network error while loading fuel history." });
