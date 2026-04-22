@@ -1755,6 +1755,20 @@ export default function App() {
     setStatus({ state: "idle", message: "" });
   };
 
+  const handleFillGap = (gap) => {
+    setActiveView("km");
+    setEditId("");
+    setForm({
+      user_name: "",
+      start_km: String(gap.start_km.toFixed(1)),
+      end_km: String(gap.end_km.toFixed(1)),
+    });
+    setStatus({
+      state: "success",
+      message: "Gap prefilled. Add the tour name and confirm with Submit.",
+    });
+  };
+
   const handleCancelEdit = () => {
     setEditId("");
     setForm((prev) => ({ ...initialForm, user_name: prev.user_name }));
@@ -2573,7 +2587,14 @@ export default function App() {
                           row.type === "gap" ? (
                             <tr key={row.id}>
                               <td colSpan="8">
-                                <strong>Fill usage history gap:</strong> {row.start_km.toFixed(1)} → {row.end_km.toFixed(1)} km
+                                <div className="row-actions">
+                                  <span>
+                                    <strong>Fill usage history gap:</strong> {row.start_km.toFixed(1)} → {row.end_km.toFixed(1)} km
+                                  </span>
+                                  <button type="button" className="table-btn" onClick={() => handleFillGap(row)}>
+                                    Add missing trip
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ) : (
