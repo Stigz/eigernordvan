@@ -24,8 +24,14 @@ variable "bookings_table_name" {
 
 variable "work_table_name" {
   type        = string
-  description = "DynamoDB table name for work planning state."
+  description = "DynamoDB table name for monthly work log state."
   default     = "van_work_planner"
+}
+
+variable "costs_table_name" {
+  type        = string
+  description = "DynamoDB table name for cost entries."
+  default     = "van_costs"
 }
 
 variable "lambda_zip_path" {

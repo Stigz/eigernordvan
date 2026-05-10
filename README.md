@@ -11,7 +11,7 @@ If a correction is needed in the future, the system should write a new event tha
 - **Frontend:** React + Vite single-page form (`frontend/`)
 - **Backend:** Go AWS Lambda (`backend/`)
 - **API:** API Gateway HTTP (`/trip`, `/trips`, `/bookings`, `/work`, `/costs`)
-- **Storage:** DynamoDB tables for ledger, bookings, and work planner state (`id` primary key)
+- **Storage:** DynamoDB tables for ledger, bookings, monthly work log, and costs (`id` primary key)
 - **Infrastructure:** Terraform (`infra/`)
 
 ## Data model (MVP)
@@ -96,12 +96,18 @@ Response includes calculated `delta_km` and `trip_cost_chf`.
 `GET /work` and `PUT /work`
 ```json
 {
-  "tasks": [],
-  "todos": [],
-  "board": []
+  "entries": [
+    {
+      "id": "uuid",
+      "person": "Nic",
+      "month": "2026-05",
+      "days": 1.5,
+      "work_notes": "Insulated side walls and fixed wiring"
+    }
+  ]
 }
 ```
-This stores and retrieves the full Work workspace state for cross-device persistence.
+This stores and retrieves the monthly Work log state from the dedicated work table. Days must be non-negative and use half-day increments.
 
 `GET /costs` and `PUT /costs`
 ```json
@@ -121,7 +127,7 @@ This stores and retrieves the full Work workspace state for cross-device persist
   ]
 }
 ```
-This stores and retrieves the Costs workspace state for shared expense, income, and settlement tracking.
+This stores and retrieves the Costs workspace state for shared expense, income, and settlement tracking from the dedicated costs table. On first read after the table split, legacy cost entries are copied from the old shared work table into the costs table.
 
 `POST /costs`, `PUT /costs/{id}`, and `DELETE /costs/{id}` are also supported for per-entry create/update/delete operations.
 
@@ -133,7 +139,7 @@ This stores and retrieves the Costs workspace state for shared expense, income, 
   "trips": [],
   "fuel": [],
   "bookings": [],
-  "work": { "tasks": [], "todos": [], "board": [] },
+  "work": { "entries": [] },
   "costs": { "entries": [] }
 }
 ```

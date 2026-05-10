@@ -24,8 +24,13 @@ output "bookings_table_name" {
 }
 
 output "work_table_name" {
-  description = "Name of the DynamoDB table storing work planner state."
+  description = "Name of the DynamoDB table storing monthly work log state."
   value       = aws_dynamodb_table.work_planner.name
+}
+
+output "costs_table_name" {
+  description = "Name of the DynamoDB table storing cost entries."
+  value       = aws_dynamodb_table.costs.name
 }
 
 output "backup_bucket_name" {
