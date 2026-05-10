@@ -69,6 +69,8 @@ type fuelRequest struct {
 	OdometerKM  float64 `json:"odometer_km"`
 	Liters      float64 `json:"liters"`
 	FuelCostCHF float64 `json:"fuel_cost_chf"`
+	Missed      bool    `json:"missed"`
+	Note        string  `json:"note"`
 }
 
 type fuelRecord struct {
@@ -78,6 +80,8 @@ type fuelRecord struct {
 	OdometerKM  float64 `json:"odometer_km"`
 	Liters      float64 `json:"liters"`
 	FuelCostCHF float64 `json:"fuel_cost_chf"`
+	Missed      bool    `json:"missed"`
+	Note        string  `json:"note,omitempty"`
 	EventType   string  `json:"event_type"`
 }
 
@@ -93,6 +97,7 @@ type eventRecord struct {
 	OdometerKM  *float64 `json:"odometer_km,omitempty"`
 	Liters      *float64 `json:"liters,omitempty"`
 	FuelCostCHF *float64 `json:"fuel_cost_chf,omitempty"`
+	Note        string   `json:"note,omitempty"`
 }
 
 type bookingRequest struct {
@@ -504,6 +509,27 @@ func (h *handler) handleGetOpenTrip(ctx context.Context) (events.APIGatewayV2HTT
 	}), nil
 }
 
+func fuelEventType(payload fuelRequest) string {
+	if payload.Missed {
+		return "fuel_missed"
+	}
+	return "fuel_manual"
+}
+
+func fuelLedgerComment(payload fuelRequest) string {
+	if payload.Missed {
+		return "Missed gas tank marker. Liters/cost omitted so efficiency reports can skip this interval."
+	}
+	return "Append-only MVP entry. Corrections are new events."
+}
+
+func addFuelNoteAttribute(item map[string]types.AttributeValue, note string) {
+	trimmed := strings.TrimSpace(note)
+	if trimmed != "" {
+		item["note"] = &types.AttributeValueMemberS{Value: trimmed}
+	}
+}
+
 func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	var payload fuelRequest
 	if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
@@ -516,16 +542,18 @@ func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewa
 
 	now := time.Now().UTC()
 	itemID := uuid.NewString()
+	eventType := fuelEventType(payload)
 	item := map[string]types.AttributeValue{
 		"id":             &types.AttributeValueMemberS{Value: itemID},
 		"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
-		"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
+		"user_name":      &types.AttributeValueMemberS{Value: strings.TrimSpace(payload.UserName)},
 		"odometer_km":    &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.OdometerKM)},
 		"liters":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.Liters)},
 		"fuel_cost_chf":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.FuelCostCHF)},
-		"event_type":     &types.AttributeValueMemberS{Value: "fuel_manual"},
-		"ledger_comment": &types.AttributeValueMemberS{Value: "Append-only MVP entry. Corrections are new events."},
+		"event_type":     &types.AttributeValueMemberS{Value: eventType},
+		"ledger_comment": &types.AttributeValueMemberS{Value: fuelLedgerComment(payload)},
 	}
+	addFuelNoteAttribute(item, payload.Note)
 
 	_, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &h.tableName,
@@ -539,7 +567,7 @@ func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewa
 	return h.respond(http.StatusOK, map[string]any{
 		"id":            itemID,
 		"timestamp":     now.Format(time.RFC3339),
-		"event_type":    "fuel_manual",
+		"event_type":    eventType,
 		"fuel_cost_chf": payload.FuelCostCHF,
 		"confirmation":  "Fuel event logged.",
 	}), nil
@@ -694,16 +722,21 @@ func (h *handler) handleUpdateFuel(ctx context.Context, request events.APIGatewa
 	}
 
 	now := time.Now().UTC()
+	eventType := fuelEventType(payload)
+	if !payload.Missed {
+		eventType = "fuel_manual_updated"
+	}
 	item := map[string]types.AttributeValue{
 		"id":             &types.AttributeValueMemberS{Value: id},
 		"timestamp":      &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
-		"user_name":      &types.AttributeValueMemberS{Value: payload.UserName},
+		"user_name":      &types.AttributeValueMemberS{Value: strings.TrimSpace(payload.UserName)},
 		"odometer_km":    &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.OdometerKM)},
 		"liters":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.Liters)},
 		"fuel_cost_chf":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", payload.FuelCostCHF)},
-		"event_type":     &types.AttributeValueMemberS{Value: "fuel_manual_updated"},
+		"event_type":     &types.AttributeValueMemberS{Value: eventType},
 		"ledger_comment": &types.AttributeValueMemberS{Value: "Fuel entry updated to resolve data mistakes."},
 	}
+	addFuelNoteAttribute(item, payload.Note)
 
 	_, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &h.tableName,
@@ -717,7 +750,7 @@ func (h *handler) handleUpdateFuel(ctx context.Context, request events.APIGatewa
 	return h.respond(http.StatusOK, map[string]any{
 		"id":            id,
 		"timestamp":     now.Format(time.RFC3339),
-		"event_type":    "fuel_manual_updated",
+		"event_type":    eventType,
 		"fuel_cost_chf": payload.FuelCostCHF,
 		"confirmation":  "Fuel event updated.",
 	}), nil
@@ -1157,6 +1190,14 @@ func parseEventRecord(item map[string]types.AttributeValue) (eventRecord, error)
 		return &parsed, nil
 	}
 
+	getStringOptional := func(key string) string {
+		value, ok := item[key].(*types.AttributeValueMemberS)
+		if !ok {
+			return ""
+		}
+		return value.Value
+	}
+
 	id, err := getStringRequired("id")
 	if err != nil {
 		return eventRecord{}, err
@@ -1202,6 +1243,7 @@ func parseEventRecord(item map[string]types.AttributeValue) (eventRecord, error)
 	if err != nil {
 		return eventRecord{}, err
 	}
+	note := getStringOptional("note")
 
 	return eventRecord{
 		ID:          id,
@@ -1214,6 +1256,7 @@ func parseEventRecord(item map[string]types.AttributeValue) (eventRecord, error)
 		OdometerKM:  odometerKM,
 		Liters:      liters,
 		FuelCostCHF: fuelCost,
+		Note:        note,
 		EventType:   eventType,
 	}, nil
 }
@@ -1793,6 +1836,8 @@ func (r eventRecord) asFuel() (fuelRecord, bool) {
 		OdometerKM:  *r.OdometerKM,
 		Liters:      *r.Liters,
 		FuelCostCHF: *r.FuelCostCHF,
+		Missed:      r.EventType == "fuel_missed",
+		Note:        r.Note,
 		EventType:   r.EventType,
 	}, true
 }
@@ -1833,11 +1878,20 @@ func validateTripUpdatePayload(payload tripRequest) error {
 }
 
 func validateFuel(payload fuelRequest) error {
-	if payload.UserName == "" {
+	if strings.TrimSpace(payload.UserName) == "" {
 		return errors.New("user_name is required")
 	}
 	if payload.OdometerKM <= 0 {
 		return errors.New("odometer_km must be greater than 0")
+	}
+	if payload.Missed {
+		if strings.TrimSpace(payload.Note) == "" {
+			return errors.New("note is required for missed fuel entries")
+		}
+		if payload.Liters < 0 || payload.FuelCostCHF < 0 {
+			return errors.New("missed fuel values must be greater than or equal to 0")
+		}
+		return nil
 	}
 	if payload.Liters <= 0 {
 		return errors.New("liters must be greater than 0")
@@ -1897,7 +1951,7 @@ func buildIntakeContext(events []eventRecord, openTrip *tripRecord) (map[string]
 				}
 			}
 		}
-		if event.EventType == "fuel_manual" && event.OdometerKM != nil {
+		if (event.EventType == "fuel_manual" || event.EventType == "fuel_manual_updated" || event.EventType == "fuel_missed") && event.OdometerKM != nil {
 			v := *event.OdometerKM
 			person.LastFuelOdometer = &v
 		}
