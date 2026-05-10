@@ -151,6 +151,16 @@ type costStatePayload struct {
 	Entries []costEntryPayload `json:"entries"`
 }
 
+type backupExportPayload struct {
+	SchemaVersion string           `json:"schema_version"`
+	GeneratedAt   string           `json:"generated_at"`
+	Trips         []tripRecord     `json:"trips"`
+	Fuel          []fuelRecord     `json:"fuel"`
+	Bookings      []bookingRecord  `json:"bookings"`
+	Work          workStatePayload `json:"work"`
+	Costs         costStatePayload `json:"costs"`
+}
+
 type handler struct {
 	tableName        string
 	bookingTableName string
@@ -244,6 +254,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/bookings" {
 			return h.handleCreateBooking(ctx, request)
 		}
+		if path == "/costs" {
+			return h.handleCreateCost(ctx, request)
+		}
 	case http.MethodGet:
 		if path == "/trips" {
 			return h.handleListTrips(ctx)
@@ -266,6 +279,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/costs" {
 			return h.handleGetCosts(ctx)
 		}
+		if path == "/backup/export" {
+			return h.handleExportBackup(ctx)
+		}
 		if strings.HasPrefix(path, "/bookings/") {
 			return h.handleGetBooking(ctx, strings.TrimPrefix(path, "/bookings/"))
 		}
@@ -285,12 +301,18 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/costs" {
 			return h.handlePutCosts(ctx, request)
 		}
+		if strings.HasPrefix(path, "/costs/") {
+			return h.handleUpdateCost(ctx, request, strings.TrimPrefix(path, "/costs/"))
+		}
 	case http.MethodDelete:
 		if strings.HasPrefix(path, "/trip/") {
 			return h.handleDeleteTrip(ctx, strings.TrimPrefix(path, "/trip/"))
 		}
 		if strings.HasPrefix(path, "/bookings/") {
 			return h.handleDeleteBooking(ctx, strings.TrimPrefix(path, "/bookings/"))
+		}
+		if strings.HasPrefix(path, "/costs/") {
+			return h.handleDeleteCost(ctx, strings.TrimPrefix(path, "/costs/"))
 		}
 	default:
 		return h.respondError(http.StatusMethodNotAllowed, "method not allowed"), nil
@@ -878,6 +900,15 @@ func (h *handler) handleDeleteBooking(ctx context.Context, id string) (events.AP
 }
 
 func (h *handler) handleGetWork(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
+	state, err := h.getWorkState(ctx)
+	if err != nil {
+		log.Printf("get work state failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to fetch work state"), nil
+	}
+	return h.respond(http.StatusOK, state), nil
+}
+
+func (h *handler) getWorkState(ctx context.Context) (workStatePayload, error) {
 	result, err := h.db.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: &h.workTableName,
 		Key: map[string]types.AttributeValue{
@@ -885,28 +916,26 @@ func (h *handler) handleGetWork(ctx context.Context) (events.APIGatewayV2HTTPRes
 		},
 	})
 	if err != nil {
-		log.Printf("get work state failed: %v", err)
-		return h.respondError(http.StatusInternalServerError, "failed to fetch work state"), nil
+		return workStatePayload{}, err
 	}
 	if len(result.Item) == 0 {
-		return h.respond(http.StatusOK, workStatePayload{
+		return workStatePayload{
 			Tasks: []map[string]any{},
 			Todos: []map[string]any{},
 			Board: []map[string]any{},
-		}), nil
+		}, nil
 	}
 
 	payloadAttr, ok := result.Item["payload"].(*types.AttributeValueMemberS)
 	if !ok {
-		return h.respondError(http.StatusInternalServerError, "stored work payload is invalid"), nil
+		return workStatePayload{}, errors.New("stored work payload is invalid")
 	}
 
 	var state workStatePayload
 	if err := json.Unmarshal([]byte(payloadAttr.Value), &state); err != nil {
-		log.Printf("unmarshal work state failed: %v", err)
-		return h.respondError(http.StatusInternalServerError, "stored work payload is invalid json"), nil
+		return workStatePayload{}, errors.New("stored work payload is invalid json")
 	}
-	return h.respond(http.StatusOK, state), nil
+	return state, nil
 }
 
 func (h *handler) handlePutWork(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -938,31 +967,57 @@ func (h *handler) handlePutWork(ctx context.Context, request events.APIGatewayV2
 }
 
 func (h *handler) handleGetCosts(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
-	result, err := h.db.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &h.workTableName,
-		Key: map[string]types.AttributeValue{
-			"id": &types.AttributeValueMemberS{Value: "cost-state"},
-		},
-	})
+	entries, err := h.listCostEntries(ctx)
 	if err != nil {
-		log.Printf("get cost state failed: %v", err)
+		log.Printf("list cost entries failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to fetch cost state"), nil
 	}
-	if len(result.Item) == 0 {
-		return h.respond(http.StatusOK, costStatePayload{Entries: []costEntryPayload{}}), nil
+	return h.respond(http.StatusOK, costStatePayload{Entries: entries}), nil
+}
+
+func (h *handler) handleExportBackup(ctx context.Context) (events.APIGatewayV2HTTPResponse, error) {
+	trips, err := h.listTrips(ctx)
+	if err != nil {
+		log.Printf("backup export list trips failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
+	fuel, err := h.listFuel(ctx)
+	if err != nil {
+		log.Printf("backup export list fuel failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
+	bookings, err := h.listAllBookings(ctx)
+	if err != nil {
+		log.Printf("backup export list bookings failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
+	workState, err := h.getWorkState(ctx)
+	if err != nil {
+		log.Printf("backup export get work failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
+	costEntries, err := h.listCostEntries(ctx)
+	if err != nil {
+		log.Printf("backup export list costs failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
 	}
 
-	payloadAttr, ok := result.Item["payload"].(*types.AttributeValueMemberS)
-	if !ok {
-		return h.respondError(http.StatusInternalServerError, "stored cost payload is invalid"), nil
-	}
+	sort.Slice(bookings, func(i, j int) bool {
+		if bookings[i].StartDate == bookings[j].StartDate {
+			return bookings[i].ID < bookings[j].ID
+		}
+		return bookings[i].StartDate < bookings[j].StartDate
+	})
 
-	var state costStatePayload
-	if err := json.Unmarshal([]byte(payloadAttr.Value), &state); err != nil {
-		log.Printf("unmarshal cost state failed: %v", err)
-		return h.respondError(http.StatusInternalServerError, "stored cost payload is invalid json"), nil
-	}
-	return h.respond(http.StatusOK, state), nil
+	return h.respond(http.StatusOK, backupExportPayload{
+		SchemaVersion: "2026-04-23",
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		Trips:         trips,
+		Fuel:          fuel,
+		Bookings:      bookings,
+		Work:          workState,
+		Costs:         costStatePayload{Entries: costEntries},
+	}), nil
 }
 
 func (h *handler) handlePutCosts(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -971,26 +1026,98 @@ func (h *handler) handlePutCosts(ctx context.Context, request events.APIGatewayV
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
-	item := map[string]types.AttributeValue{
-		"id":         &types.AttributeValueMemberS{Value: "cost-state"},
-		"payload":    &types.AttributeValueMemberS{Value: string(normalized)},
-		"updated_at": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
-	}
-	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &h.workTableName,
-		Item:      item,
-	})
-	if err != nil {
-		log.Printf("put cost state failed: %v", err)
-		return h.respondError(http.StatusInternalServerError, "failed to store cost state"), nil
-	}
-
 	var state costStatePayload
 	if err := json.Unmarshal(normalized, &state); err != nil {
 		log.Printf("normalized cost payload unmarshal failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to read normalized cost state"), nil
 	}
+
+	if err := h.replaceCostEntries(ctx, state.Entries); err != nil {
+		log.Printf("replace cost entries failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to store cost state"), nil
+	}
 	return h.respond(http.StatusOK, state), nil
+}
+
+func (h *handler) listAllBookings(ctx context.Context) ([]bookingRecord, error) {
+	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+		TableName: &h.bookingTableName,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	bookings := make([]bookingRecord, 0, len(result.Items))
+	for _, item := range result.Items {
+		record, parseErr := parseBookingRecord(item)
+		if parseErr != nil {
+			log.Printf("backup export skipping malformed booking item: %v", parseErr)
+			continue
+		}
+		bookings = append(bookings, record)
+	}
+
+	return bookings, nil
+}
+
+func (h *handler) handleCreateCost(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	entry, err := normalizeSingleCostEntry([]byte(request.Body))
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+	if err := h.putCostEntry(ctx, entry, false); err != nil {
+		log.Printf("create cost entry failed: %v", err)
+		var conditionalErr *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalErr) {
+			return h.respondError(http.StatusConflict, "cost entry already exists"), nil
+		}
+		return h.respondError(http.StatusInternalServerError, "failed to store cost entry"), nil
+	}
+	return h.respond(http.StatusOK, entry), nil
+}
+
+func (h *handler) handleUpdateCost(ctx context.Context, request events.APIGatewayV2HTTPRequest, id string) (events.APIGatewayV2HTTPResponse, error) {
+	entry, err := normalizeSingleCostEntry([]byte(request.Body))
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+	if strings.TrimSpace(id) == "" {
+		return h.respondError(http.StatusBadRequest, "cost id is required"), nil
+	}
+	if entry.ID != strings.TrimSpace(id) {
+		return h.respondError(http.StatusBadRequest, "cost id in path must match payload id"), nil
+	}
+	if err := h.putCostEntry(ctx, entry, true); err != nil {
+		log.Printf("update cost entry failed: %v", err)
+		var conditionalErr *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalErr) {
+			return h.respondError(http.StatusNotFound, "cost entry not found"), nil
+		}
+		return h.respondError(http.StatusInternalServerError, "failed to update cost entry"), nil
+	}
+	return h.respond(http.StatusOK, entry), nil
+}
+
+func (h *handler) handleDeleteCost(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
+	trimmedID := strings.TrimSpace(id)
+	if trimmedID == "" {
+		return h.respondError(http.StatusBadRequest, "cost id is required"), nil
+	}
+	if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &h.workTableName,
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: costEntryKey(trimmedID)},
+		},
+		ConditionExpression: awsString("attribute_exists(id)"),
+	}); err != nil {
+		log.Printf("delete cost entry failed: %v", err)
+		var conditionalErr *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalErr) {
+			return h.respondError(http.StatusNotFound, "cost entry not found"), nil
+		}
+		return h.respondError(http.StatusInternalServerError, "failed to delete cost entry"), nil
+	}
+	return h.respond(http.StatusOK, map[string]string{"id": trimmedID}), nil
 }
 
 func parseTripRecord(item map[string]types.AttributeValue) (tripRecord, error) {
@@ -1483,8 +1610,158 @@ func normalizeAndValidateCostPayload(raw []byte) ([]byte, error) {
 	return json.Marshal(costStatePayload{Entries: normalized})
 }
 
+func normalizeSingleCostEntry(raw []byte) (costEntryPayload, error) {
+	var entry costEntryPayload
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return costEntryPayload{}, errors.New("invalid json payload")
+	}
+	wrapped, err := json.Marshal(costStatePayload{Entries: []costEntryPayload{entry}})
+	if err != nil {
+		return costEntryPayload{}, errors.New("invalid json payload")
+	}
+	normalized, err := normalizeAndValidateCostPayload(wrapped)
+	if err != nil {
+		return costEntryPayload{}, err
+	}
+	var state costStatePayload
+	if err := json.Unmarshal(normalized, &state); err != nil {
+		return costEntryPayload{}, errors.New("invalid json payload")
+	}
+	if len(state.Entries) != 1 {
+		return costEntryPayload{}, errors.New("payload must contain exactly one entry")
+	}
+	return state.Entries[0], nil
+}
+
+func costEntryKey(id string) string {
+	return "cost-entry#" + strings.TrimSpace(id)
+}
+
+func parseCostEntryItem(item map[string]types.AttributeValue) (costEntryPayload, bool) {
+	keyAttr, ok := item["id"].(*types.AttributeValueMemberS)
+	if !ok {
+		return costEntryPayload{}, false
+	}
+	if !strings.HasPrefix(keyAttr.Value, "cost-entry#") {
+		return costEntryPayload{}, false
+	}
+	payloadAttr, ok := item["payload"].(*types.AttributeValueMemberS)
+	if !ok {
+		return costEntryPayload{}, false
+	}
+	var entry costEntryPayload
+	if err := json.Unmarshal([]byte(payloadAttr.Value), &entry); err != nil {
+		return costEntryPayload{}, false
+	}
+	if strings.TrimSpace(entry.ID) == "" {
+		entry.ID = strings.TrimPrefix(keyAttr.Value, "cost-entry#")
+	}
+	return entry, true
+}
+
+func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, error) {
+	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+		TableName: &h.workTableName,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]costEntryPayload, 0)
+	legacyPayload := ""
+	for _, item := range result.Items {
+		entry, ok := parseCostEntryItem(item)
+		if ok {
+			entries = append(entries, entry)
+			continue
+		}
+		idAttr, idOK := item["id"].(*types.AttributeValueMemberS)
+		if !idOK || idAttr.Value != "cost-state" {
+			continue
+		}
+		payloadAttr, payloadOK := item["payload"].(*types.AttributeValueMemberS)
+		if payloadOK {
+			legacyPayload = payloadAttr.Value
+		}
+	}
+	if len(entries) > 0 {
+		return entries, nil
+	}
+	if strings.TrimSpace(legacyPayload) == "" {
+		return []costEntryPayload{}, nil
+	}
+	var legacyState costStatePayload
+	if err := json.Unmarshal([]byte(legacyPayload), &legacyState); err != nil {
+		return nil, errors.New("stored cost payload is invalid json")
+	}
+	for _, entry := range legacyState.Entries {
+		if err := h.putCostEntry(ctx, entry, true); err != nil {
+			return nil, err
+		}
+	}
+	return legacyState.Entries, nil
+}
+
+func (h *handler) putCostEntry(ctx context.Context, entry costEntryPayload, mustExist bool) error {
+	payloadBytes, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	item := map[string]types.AttributeValue{
+		"id":         &types.AttributeValueMemberS{Value: costEntryKey(entry.ID)},
+		"item_type":  &types.AttributeValueMemberS{Value: "cost_entry"},
+		"payload":    &types.AttributeValueMemberS{Value: string(payloadBytes)},
+		"updated_at": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+	}
+	input := &dynamodb.PutItemInput{
+		TableName: &h.workTableName,
+		Item:      item,
+	}
+	if mustExist {
+		input.ConditionExpression = awsString("attribute_exists(id)")
+	} else {
+		input.ConditionExpression = awsString("attribute_not_exists(id)")
+	}
+	_, err = h.db.PutItem(ctx, input)
+	return err
+}
+
+func (h *handler) replaceCostEntries(ctx context.Context, entries []costEntryPayload) error {
+	existing, err := h.listCostEntries(ctx)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := h.putCostEntry(ctx, entry, true); err != nil {
+			return err
+		}
+	}
+	nextIDs := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		nextIDs[entry.ID] = struct{}{}
+	}
+	for _, entry := range existing {
+		if _, ok := nextIDs[entry.ID]; ok {
+			continue
+		}
+		if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+			TableName: &h.workTableName,
+			Key: map[string]types.AttributeValue{
+				"id": &types.AttributeValueMemberS{Value: costEntryKey(entry.ID)},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func roundMoney(value float64) float64 {
 	return float64(int(value*100+0.5)) / 100
+}
+
+func awsString(value string) *string {
+	return &value
 }
 
 func (r eventRecord) asTrip() (tripRecord, bool) {

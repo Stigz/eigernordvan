@@ -123,6 +123,32 @@ This stores and retrieves the full Work workspace state for cross-device persist
 ```
 This stores and retrieves the Costs workspace state for shared expense, income, and settlement tracking.
 
+`POST /costs`, `PUT /costs/{id}`, and `DELETE /costs/{id}` are also supported for per-entry create/update/delete operations.
+
+`GET /backup/export`
+```json
+{
+  "schema_version": "2026-04-23",
+  "generated_at": "2026-04-23T08:00:00Z",
+  "trips": [],
+  "fuel": [],
+  "bookings": [],
+  "work": { "tasks": [], "todos": [], "board": [] },
+  "costs": { "entries": [] }
+}
+```
+This exports a portable full snapshot of all major data domains (km/trips, fuel/gas, bookings, work, costs) for archival backup.
+
+To create compressed artifacts locally:
+```bash
+./scripts/export-backup.sh "$API_BASE_URL" backups
+```
+
+Suggested monthly cron:
+```bash
+0 2 1 * * /path/to/repo/scripts/export-backup.sh https://your-api.execute-api.region.amazonaws.com /var/backups/van
+```
+
 ## Notes for future features
 - **OCR** would attach a new event (`event_type = trip_ocr`) referencing the original trip ID.
 - **Fuel costs** would be a new event type with its own fields (never overwriting trips).
