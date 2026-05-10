@@ -27,3 +27,8 @@ output "work_table_name" {
   description = "Name of the DynamoDB table storing work planner state."
   value       = aws_dynamodb_table.work_planner.name
 }
+
+output "backup_bucket_name" {
+  description = "Name of the S3 bucket intended for durable backup artifacts."
+  value       = aws_s3_bucket.backup_bucket.bucket
+}

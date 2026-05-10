@@ -43,6 +43,10 @@ resource "aws_dynamodb_table" "trip_ledger" {
   tags = {
     Project = var.project_name
   }
+
+  point_in_time_recovery {
+    enabled = true
+  }
 }
 
 resource "aws_dynamodb_table" "bookings" {
@@ -75,6 +79,10 @@ resource "aws_dynamodb_table" "bookings" {
   tags = {
     Project = var.project_name
   }
+
+  point_in_time_recovery {
+    enabled = true
+  }
 }
 
 resource "aws_dynamodb_table" "work_planner" {
@@ -89,6 +97,10 @@ resource "aws_dynamodb_table" "work_planner" {
 
   tags = {
     Project = var.project_name
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 }
 
@@ -282,9 +294,33 @@ resource "aws_apigatewayv2_route" "costs_get_route" {
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 
+resource "aws_apigatewayv2_route" "costs_create_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "POST /costs"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
 resource "aws_apigatewayv2_route" "costs_put_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "PUT /costs"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "costs_update_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "PUT /costs/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "costs_delete_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "DELETE /costs/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "backup_export_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /backup/export"
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 
@@ -306,12 +342,50 @@ resource "random_id" "frontend_suffix" {
   byte_length = 4
 }
 
+resource "random_id" "backup_suffix" {
+  byte_length = 4
+}
+
 resource "aws_s3_bucket" "frontend_bucket" {
   bucket        = "${var.project_name}-frontend-${random_id.frontend_suffix.hex}"
   force_destroy = true
 
   tags = {
     Project = var.project_name
+  }
+}
+
+resource "aws_s3_bucket" "backup_bucket" {
+  bucket        = "${var.project_name}-backups-${random_id.backup_suffix.hex}"
+  force_destroy = false
+
+  tags = {
+    Project = var.project_name
+    Purpose = "monthly-backups"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "backup_bucket_versioning" {
+  bucket = aws_s3_bucket.backup_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "backup_lifecycle" {
+  bucket = aws_s3_bucket.backup_bucket.id
+
+  rule {
+    id     = "retain-backups"
+    status = "Enabled"
+
+    expiration {
+      days = 3650
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 3650
+    }
   }
 }
 

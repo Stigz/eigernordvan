@@ -831,7 +831,7 @@ export default function App() {
   const [costForm, setCostForm] = useState(() => ({ ...initialCostForm, date: formatDateISO(new Date()) }));
   const [costFilters, setCostFilters] = useState({ year: "all", category: "all", person: "all", type: "all" });
   const [costSyncStatus, setCostSyncStatus] = useState({ state: "idle", message: "" });
-  const [isCostLoaded, setIsCostLoaded] = useState(false);
+  const [isCostHydratedFromServer, setIsCostHydratedFromServer] = useState(false);
   const [intakeContext, setIntakeContext] = useState({ people: [], open_trip: null, suggested_start_km: null });
   const [quickIntakePerson, setQuickIntakePerson] = useState("");
   const [quickIntakeAction, setQuickIntakeAction] = useState("km");
@@ -1522,7 +1522,7 @@ export default function App() {
   useEffect(() => {
     const loadCostsFromApi = async () => {
       if (!apiBaseUrl) {
-        setIsCostLoaded(true);
+        setIsCostHydratedFromServer(true);
         return;
       }
 
@@ -1532,7 +1532,6 @@ export default function App() {
         const payload = await response.json();
         if (!response.ok) {
           setCostSyncStatus({ state: "error", message: payload.error || "Could not load cost workspace." });
-          setIsCostLoaded(true);
           return;
         }
         const nextState = {
@@ -1546,39 +1545,15 @@ export default function App() {
         setCostState(nextState);
         saveCostState(nextState);
         setCostSyncStatus({ state: "success", message: "Cost workspace synced." });
+        setIsCostHydratedFromServer(true);
       } catch (_error) {
         setCostSyncStatus({ state: "error", message: "Network error while loading cost workspace." });
-      } finally {
-        setIsCostLoaded(true);
+        setIsCostHydratedFromServer(false);
       }
     };
 
     loadCostsFromApi();
   }, [apiBaseUrl]);
-
-  useEffect(() => {
-    const persistCostToApi = async () => {
-      if (!apiBaseUrl || !isCostLoaded) {
-        return;
-      }
-      try {
-        const response = await fetch(`${apiBaseUrl}/costs`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(costState),
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          setCostSyncStatus({ state: "error", message: payload.error || "Could not save cost workspace." });
-          return;
-        }
-        setCostSyncStatus({ state: "success", message: "Cost workspace saved." });
-      } catch (_error) {
-        setCostSyncStatus({ state: "error", message: "Network error while saving cost workspace." });
-      }
-    };
-    persistCostToApi();
-  }, [apiBaseUrl, isCostLoaded, costState]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -2035,7 +2010,7 @@ export default function App() {
     }
   };
 
-  const handleCostSubmit = (event) => {
+  const handleCostSubmit = async (event) => {
     event.preventDefault();
     const amount = Number(costForm.amount_chf);
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -2070,6 +2045,23 @@ export default function App() {
     };
 
     setCostState((prev) => ({ entries: [entry, ...(prev.entries || [])] }));
+    if (apiBaseUrl && isCostHydratedFromServer) {
+      try {
+        const response = await fetch(`${apiBaseUrl}/costs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(entry),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          setCostSyncStatus({ state: "error", message: payload.error || "Could not save cost entry to backend." });
+          return;
+        }
+      } catch (_error) {
+        setCostSyncStatus({ state: "error", message: "Network error while saving cost entry to backend." });
+        return;
+      }
+    }
     setCostForm((prev) => ({
       ...initialCostForm,
       date: formatDateISO(new Date()),
@@ -2079,11 +2071,27 @@ export default function App() {
     setCostSyncStatus({ state: "success", message: "Cost entry saved." });
   };
 
-  const handleDeleteCostEntry = (id) => {
+  const handleDeleteCostEntry = async (id) => {
     setCostState((prev) => ({ entries: (prev.entries || []).filter((entry) => entry.id !== id) }));
+    if (apiBaseUrl && isCostHydratedFromServer) {
+      try {
+        const response = await fetch(`${apiBaseUrl}/costs/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          setCostSyncStatus({ state: "error", message: payload.error || "Could not delete cost entry in backend." });
+          return;
+        }
+      } catch (_error) {
+        setCostSyncStatus({ state: "error", message: "Network error while deleting cost entry in backend." });
+        return;
+      }
+    }
+    setCostSyncStatus({ state: "success", message: "Cost entry deleted." });
   };
 
-  const handleImportHistoricalDataset = () => {
+  const handleImportHistoricalDataset = async () => {
     const raw = window.prompt("Paste lines as: description<TAB>amount (one per line).");
     if (!raw) {
       return;
@@ -2128,6 +2136,25 @@ export default function App() {
     }
 
     setCostState((prev) => ({ entries: [...importedEntries, ...(prev.entries || [])] }));
+    if (apiBaseUrl && isCostHydratedFromServer) {
+      try {
+        for (const entry of importedEntries) {
+          const response = await fetch(`${apiBaseUrl}/costs`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(entry),
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            setCostSyncStatus({ state: "error", message: payload.error || "Could not import all entries to backend." });
+            return;
+          }
+        }
+      } catch (_error) {
+        setCostSyncStatus({ state: "error", message: "Network error while importing entries to backend." });
+        return;
+      }
+    }
     setCostSyncStatus({ state: "success", message: `Imported ${importedEntries.length} historical entries with categories.` });
   };
 
