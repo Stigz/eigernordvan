@@ -1063,3 +1063,37 @@ th {
   height: 10px;
   border-radius: 999px;
 }
+
+.field textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #cbd5f5;
+  font-size: 16px;
+  font-family: inherit;
+  resize: vertical;
+  background: #fff;
+}
+
+.missed-gas-toggle {
+  border: 1px solid #f59e0b;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+
+.missed-gas-toggle.active {
+  background: #fef3c7;
+  color: #78350f;
+}
+
+.note-cell {
+  max-width: 260px;
+  white-space: normal;
+  color: #475569;
+}
