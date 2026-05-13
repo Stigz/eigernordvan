@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,14 +152,20 @@ type costStatePayload struct {
 	Entries []costEntryPayload `json:"entries"`
 }
 
+type backupTableExport struct {
+	TableName string           `json:"table_name"`
+	Items     []map[string]any `json:"items"`
+}
+
 type backupExportPayload struct {
-	SchemaVersion string           `json:"schema_version"`
-	GeneratedAt   string           `json:"generated_at"`
-	Trips         []tripRecord     `json:"trips"`
-	Fuel          []fuelRecord     `json:"fuel"`
-	Bookings      []bookingRecord  `json:"bookings"`
-	Work          workStatePayload `json:"work"`
-	Costs         costStatePayload `json:"costs"`
+	SchemaVersion string                       `json:"schema_version"`
+	GeneratedAt   string                       `json:"generated_at"`
+	Tables        map[string]backupTableExport `json:"tables"`
+	Trips         []tripRecord                 `json:"trips"`
+	Fuel          []fuelRecord                 `json:"fuel"`
+	Bookings      []bookingRecord              `json:"bookings"`
+	Work          workStatePayload             `json:"work"`
+	Costs         costStatePayload             `json:"costs"`
 }
 
 type handler struct {
@@ -358,15 +365,13 @@ func (h *handler) listFuel(ctx context.Context) ([]fuelRecord, error) {
 }
 
 func (h *handler) listEvents(ctx context.Context) ([]eventRecord, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
-		TableName: &h.tableName,
-	})
+	items, err := h.scanAllItems(ctx, h.tableName)
 	if err != nil {
 		return nil, err
 	}
 
-	records := make([]eventRecord, 0, len(result.Items))
-	for _, item := range result.Items {
+	records := make([]eventRecord, 0, len(items))
+	for _, item := range items {
 		record, parseErr := parseEventRecord(item)
 		if parseErr != nil {
 			log.Printf("skipping malformed item: %v", parseErr)
@@ -724,15 +729,13 @@ func (h *handler) handleUpdateFuel(ctx context.Context, request events.APIGatewa
 }
 
 func (h *handler) listBookings(ctx context.Context) ([]bookingRecord, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
-		TableName: &h.bookingTableName,
-	})
+	items, err := h.scanAllItems(ctx, h.bookingTableName)
 	if err != nil {
 		return nil, err
 	}
 
-	bookings := make([]bookingRecord, 0, len(result.Items))
-	for _, item := range result.Items {
+	bookings := make([]bookingRecord, 0, len(items))
+	for _, item := range items {
 		booking, parseErr := parseBookingRecord(item)
 		if parseErr != nil {
 			log.Printf("skipping malformed booking item: %v", parseErr)
@@ -1009,15 +1012,127 @@ func (h *handler) handleExportBackup(ctx context.Context) (events.APIGatewayV2HT
 		return bookings[i].StartDate < bookings[j].StartDate
 	})
 
+	tables, err := h.exportAllTables(ctx)
+	if err != nil {
+		log.Printf("backup export all tables failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
+
 	return h.respond(http.StatusOK, backupExportPayload{
 		SchemaVersion: "2026-04-23",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		Tables:        tables,
 		Trips:         trips,
 		Fuel:          fuel,
 		Bookings:      bookings,
 		Work:          workState,
 		Costs:         costStatePayload{Entries: costEntries},
 	}), nil
+}
+
+func (h *handler) exportAllTables(ctx context.Context) (map[string]backupTableExport, error) {
+	tableNames := map[string]string{
+		"ledger_events": h.tableName,
+		"bookings":      h.bookingTableName,
+		"work":          h.workTableName,
+	}
+
+	exports := make(map[string]backupTableExport, len(tableNames))
+	for label, tableName := range tableNames {
+		items, err := h.scanAllItems(ctx, tableName)
+		if err != nil {
+			return nil, err
+		}
+		exports[label] = backupTableExport{
+			TableName: tableName,
+			Items:     dynamoItemsToMaps(items),
+		}
+	}
+
+	return exports, nil
+}
+
+func (h *handler) scanAllItems(ctx context.Context, tableName string) ([]map[string]types.AttributeValue, error) {
+	items := []map[string]types.AttributeValue{}
+	input := &dynamodb.ScanInput{TableName: &tableName}
+
+	for {
+		result, err := h.db.Scan(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, result.Items...)
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		input.ExclusiveStartKey = result.LastEvaluatedKey
+	}
+
+	return items, nil
+}
+
+func dynamoItemsToMaps(items []map[string]types.AttributeValue) []map[string]any {
+	exported := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		exportedItem := make(map[string]any, len(item))
+		for key, value := range item {
+			exportedItem[key] = dynamoValueToAny(value)
+		}
+		exported = append(exported, exportedItem)
+	}
+	return exported
+}
+
+func dynamoValueToAny(value types.AttributeValue) any {
+	switch typed := value.(type) {
+	case *types.AttributeValueMemberS:
+		return typed.Value
+	case *types.AttributeValueMemberN:
+		parsed, err := strconv.ParseFloat(typed.Value, 64)
+		if err != nil {
+			return typed.Value
+		}
+		return parsed
+	case *types.AttributeValueMemberBOOL:
+		return typed.Value
+	case *types.AttributeValueMemberNULL:
+		return nil
+	case *types.AttributeValueMemberSS:
+		return typed.Value
+	case *types.AttributeValueMemberNS:
+		values := make([]any, 0, len(typed.Value))
+		for _, raw := range typed.Value {
+			parsed, err := strconv.ParseFloat(raw, 64)
+			if err != nil {
+				values = append(values, raw)
+				continue
+			}
+			values = append(values, parsed)
+		}
+		return values
+	case *types.AttributeValueMemberBS:
+		values := make([]string, 0, len(typed.Value))
+		for _, raw := range typed.Value {
+			values = append(values, base64.StdEncoding.EncodeToString(raw))
+		}
+		return values
+	case *types.AttributeValueMemberB:
+		return base64.StdEncoding.EncodeToString(typed.Value)
+	case *types.AttributeValueMemberL:
+		values := make([]any, 0, len(typed.Value))
+		for _, item := range typed.Value {
+			values = append(values, dynamoValueToAny(item))
+		}
+		return values
+	case *types.AttributeValueMemberM:
+		values := make(map[string]any, len(typed.Value))
+		for key, item := range typed.Value {
+			values[key] = dynamoValueToAny(item)
+		}
+		return values
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
 
 func (h *handler) handlePutCosts(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -1040,15 +1155,13 @@ func (h *handler) handlePutCosts(ctx context.Context, request events.APIGatewayV
 }
 
 func (h *handler) listAllBookings(ctx context.Context) ([]bookingRecord, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
-		TableName: &h.bookingTableName,
-	})
+	items, err := h.scanAllItems(ctx, h.bookingTableName)
 	if err != nil {
 		return nil, err
 	}
 
-	bookings := make([]bookingRecord, 0, len(result.Items))
-	for _, item := range result.Items {
+	bookings := make([]bookingRecord, 0, len(items))
+	for _, item := range items {
 		record, parseErr := parseBookingRecord(item)
 		if parseErr != nil {
 			log.Printf("backup export skipping malformed booking item: %v", parseErr)
@@ -1660,16 +1773,14 @@ func parseCostEntryItem(item map[string]types.AttributeValue) (costEntryPayload,
 }
 
 func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
-		TableName: &h.workTableName,
-	})
+	items, err := h.scanAllItems(ctx, h.workTableName)
 	if err != nil {
 		return nil, err
 	}
 
 	entries := make([]costEntryPayload, 0)
 	legacyPayload := ""
-	for _, item := range result.Items {
+	for _, item := range items {
 		entry, ok := parseCostEntryItem(item)
 		if ok {
 			entries = append(entries, entry)

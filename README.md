@@ -130,6 +130,11 @@ This stores and retrieves the Costs workspace state for shared expense, income, 
 {
   "schema_version": "2026-04-23",
   "generated_at": "2026-04-23T08:00:00Z",
+  "tables": {
+    "ledger_events": { "table_name": "...", "items": [] },
+    "bookings": { "table_name": "...", "items": [] },
+    "work": { "table_name": "...", "items": [] }
+  },
   "trips": [],
   "fuel": [],
   "bookings": [],
@@ -137,7 +142,7 @@ This stores and retrieves the Costs workspace state for shared expense, income, 
   "costs": { "entries": [] }
 }
 ```
-This exports a portable full snapshot of all major data domains (km/trips, fuel/gas, bookings, work, costs) for archival backup.
+This exports a portable full snapshot of all major data domains (km/trips, fuel/gas, bookings, work, costs) plus raw, paginated exports of every configured DynamoDB table for archival backup. The frontend download button turns those raw table exports into an Excel workbook with one sheet per table.
 
 To create compressed artifacts locally:
 ```bash
