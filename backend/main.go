@@ -363,15 +363,24 @@ func (h *handler) listFuel(ctx context.Context) ([]fuelRecord, error) {
 }
 
 func (h *handler) listEvents(ctx context.Context) ([]eventRecord, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+	input := &dynamodb.ScanInput{
 		TableName: &h.tableName,
-	})
-	if err != nil {
-		return nil, err
+	}
+	var items []map[string]types.AttributeValue
+	for {
+		result, err := h.db.Scan(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, result.Items...)
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		input.ExclusiveStartKey = result.LastEvaluatedKey
 	}
 
-	records := make([]eventRecord, 0, len(result.Items))
-	for _, item := range result.Items {
+	records := make([]eventRecord, 0, len(items))
+	for _, item := range items {
 		record, parseErr := parseEventRecord(item)
 		if parseErr != nil {
 			log.Printf("skipping malformed item: %v", parseErr)
@@ -1073,15 +1082,24 @@ func (h *handler) handlePutCosts(ctx context.Context, request events.APIGatewayV
 }
 
 func (h *handler) listAllBookings(ctx context.Context) ([]bookingRecord, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+	input := &dynamodb.ScanInput{
 		TableName: &h.bookingTableName,
-	})
-	if err != nil {
-		return nil, err
+	}
+	var items []map[string]types.AttributeValue
+	for {
+		result, err := h.db.Scan(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, result.Items...)
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		input.ExclusiveStartKey = result.LastEvaluatedKey
 	}
 
-	bookings := make([]bookingRecord, 0, len(result.Items))
-	for _, item := range result.Items {
+	bookings := make([]bookingRecord, 0, len(items))
+	for _, item := range items {
 		record, parseErr := parseBookingRecord(item)
 		if parseErr != nil {
 			log.Printf("backup export skipping malformed booking item: %v", parseErr)
@@ -1703,16 +1721,25 @@ func parseCostEntryItem(item map[string]types.AttributeValue) (costEntryPayload,
 }
 
 func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+	input := &dynamodb.ScanInput{
 		TableName: &h.workTableName,
-	})
-	if err != nil {
-		return nil, err
+	}
+	var items []map[string]types.AttributeValue
+	for {
+		result, err := h.db.Scan(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, result.Items...)
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		input.ExclusiveStartKey = result.LastEvaluatedKey
 	}
 
 	entries := make([]costEntryPayload, 0)
 	legacyPayload := ""
-	for _, item := range result.Items {
+	for _, item := range items {
 		entry, ok := parseCostEntryItem(item)
 		if ok {
 			entries = append(entries, entry)
