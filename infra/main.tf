@@ -104,6 +104,25 @@ resource "aws_dynamodb_table" "work_planner" {
   }
 }
 
+resource "aws_dynamodb_table" "costs" {
+  name         = var.costs_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  tags = {
+    Project = var.project_name
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
 resource "aws_iam_role" "lambda_role" {
   name = "${var.project_name}-lambda-role"
 
@@ -141,6 +160,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
           aws_dynamodb_table.trip_ledger.arn,
           aws_dynamodb_table.bookings.arn,
           aws_dynamodb_table.work_planner.arn,
+          aws_dynamodb_table.costs.arn,
           "${aws_dynamodb_table.bookings.arn}/index/*"
         ]
       },
@@ -171,6 +191,7 @@ resource "aws_lambda_function" "trip_logger" {
       TABLE_NAME         = aws_dynamodb_table.trip_ledger.name
       BOOKING_TABLE_NAME = aws_dynamodb_table.bookings.name
       WORK_TABLE_NAME    = aws_dynamodb_table.work_planner.name
+      COST_TABLE_NAME    = aws_dynamodb_table.costs.name
     }
   }
 

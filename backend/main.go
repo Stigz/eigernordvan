@@ -129,10 +129,18 @@ type bookingRecord struct {
 	UpdatedAt     string  `json:"updated_at"`
 }
 
+type workEntryPayload struct {
+	ID        string  `json:"id"`
+	Person    string  `json:"person"`
+	Month     string  `json:"month"`
+	Days      float64 `json:"days"`
+	WorkNotes string  `json:"work_notes"`
+	CreatedAt string  `json:"created_at,omitempty"`
+	UpdatedAt string  `json:"updated_at,omitempty"`
+}
+
 type workStatePayload struct {
-	Tasks []map[string]any `json:"tasks"`
-	Todos []map[string]any `json:"todos"`
-	Board []map[string]any `json:"board"`
+	Entries []workEntryPayload `json:"entries"`
 }
 
 type costEntryPayload struct {
@@ -170,6 +178,7 @@ type handler struct {
 	tableName        string
 	bookingTableName string
 	workTableName    string
+	costTableName    string
 	corsOrigin       string
 	db               *dynamodb.Client
 }
@@ -193,6 +202,10 @@ func main() {
 	if workTableName == "" {
 		panic("WORK_TABLE_NAME is required")
 	}
+	costTableName := os.Getenv("COST_TABLE_NAME")
+	if costTableName == "" {
+		panic("COST_TABLE_NAME is required")
+	}
 
 	corsOrigin := os.Getenv("CORS_ALLOW_ORIGIN")
 	if corsOrigin == "" {
@@ -203,6 +216,7 @@ func main() {
 		tableName:        tableName,
 		bookingTableName: bookingTableName,
 		workTableName:    workTableName,
+		costTableName:    costTableName,
 		corsOrigin:       corsOrigin,
 		db:               dynamodb.NewFromConfig(cfg),
 	}
@@ -952,11 +966,7 @@ func (h *handler) getWorkState(ctx context.Context) (workStatePayload, error) {
 		return workStatePayload{}, err
 	}
 	if len(result.Item) == 0 {
-		return workStatePayload{
-			Tasks: []map[string]any{},
-			Todos: []map[string]any{},
-			Board: []map[string]any{},
-		}, nil
+		return workStatePayload{Entries: []workEntryPayload{}}, nil
 	}
 
 	payloadAttr, ok := result.Item["payload"].(*types.AttributeValueMemberS)
@@ -967,6 +977,9 @@ func (h *handler) getWorkState(ctx context.Context) (workStatePayload, error) {
 	var state workStatePayload
 	if err := json.Unmarshal([]byte(payloadAttr.Value), &state); err != nil {
 		return workStatePayload{}, errors.New("stored work payload is invalid json")
+	}
+	if state.Entries == nil {
+		state.Entries = []workEntryPayload{}
 	}
 	return state, nil
 }
@@ -1137,7 +1150,7 @@ func (h *handler) handleDeleteCost(ctx context.Context, id string) (events.APIGa
 		return h.respondError(http.StatusBadRequest, "cost id is required"), nil
 	}
 	if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: &h.workTableName,
+		TableName: &h.costTableName,
 		Key: map[string]types.AttributeValue{
 			"id": &types.AttributeValueMemberS{Value: costEntryKey(trimmedID)},
 		},
@@ -1541,36 +1554,43 @@ func normalizeAndValidateWorkPayload(raw []byte) ([]byte, error) {
 		return nil, errors.New("invalid json payload")
 	}
 
-	readArray := func(key string) ([]map[string]any, error) {
-		value, exists := payload[key]
-		if !exists || len(value) == 0 {
-			return []map[string]any{}, nil
-		}
-		var out []map[string]any
-		if err := json.Unmarshal(value, &out); err != nil {
-			return nil, fmt.Errorf("%s must be an array", key)
-		}
-		return out, nil
+	entriesRaw, exists := payload["entries"]
+	if !exists || len(entriesRaw) == 0 {
+		return json.Marshal(workStatePayload{Entries: []workEntryPayload{}})
 	}
 
-	tasks, err := readArray("tasks")
-	if err != nil {
-		return nil, err
-	}
-	todos, err := readArray("todos")
-	if err != nil {
-		return nil, err
-	}
-	board, err := readArray("board")
-	if err != nil {
-		return nil, err
+	var entries []workEntryPayload
+	if err := json.Unmarshal(entriesRaw, &entries); err != nil {
+		return nil, errors.New("entries must be an array")
 	}
 
-	normalized := workStatePayload{
-		Tasks: tasks,
-		Todos: todos,
-		Board: board,
+	normalized := workStatePayload{Entries: make([]workEntryPayload, 0, len(entries))}
+	for index, entry := range entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+		entry.Person = strings.TrimSpace(entry.Person)
+		entry.Month = strings.TrimSpace(entry.Month)
+		entry.WorkNotes = strings.TrimSpace(entry.WorkNotes)
+		entry.CreatedAt = strings.TrimSpace(entry.CreatedAt)
+		entry.UpdatedAt = strings.TrimSpace(entry.UpdatedAt)
+
+		if entry.ID == "" {
+			return nil, fmt.Errorf("entries[%d].id is required", index)
+		}
+		if entry.Person == "" {
+			return nil, fmt.Errorf("entries[%d].person is required", index)
+		}
+		if _, err := time.Parse("2006-01", entry.Month); err != nil {
+			return nil, fmt.Errorf("entries[%d].month must be YYYY-MM", index)
+		}
+		if entry.Days < 0 {
+			return nil, fmt.Errorf("entries[%d].days must be 0 or greater", index)
+		}
+		if entry.Days*2 != float64(int(entry.Days*2)) {
+			return nil, fmt.Errorf("entries[%d].days must use half-day increments", index)
+		}
+		normalized.Entries = append(normalized.Entries, entry)
 	}
+
 	return json.Marshal(normalized)
 }
 
@@ -1703,11 +1723,30 @@ func parseCostEntryItem(item map[string]types.AttributeValue) (costEntryPayload,
 }
 
 func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
-		TableName: &h.workTableName,
-	})
+	entries, legacyPayload, err := h.listCostEntriesFromTable(ctx, h.costTableName)
 	if err != nil {
 		return nil, err
+	}
+	if len(entries) > 0 || strings.TrimSpace(legacyPayload) != "" {
+		return h.migrateLegacyCostState(ctx, entries, legacyPayload)
+	}
+
+	legacyEntries, legacyWorkPayload, err := h.listCostEntriesFromTable(ctx, h.workTableName)
+	if err != nil {
+		return nil, err
+	}
+	if len(legacyEntries) == 0 && strings.TrimSpace(legacyWorkPayload) == "" {
+		return []costEntryPayload{}, nil
+	}
+	return h.migrateLegacyCostState(ctx, legacyEntries, legacyWorkPayload)
+}
+
+func (h *handler) listCostEntriesFromTable(ctx context.Context, tableName string) ([]costEntryPayload, string, error) {
+	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+		TableName: &tableName,
+	})
+	if err != nil {
+		return nil, "", err
 	}
 
 	entries := make([]costEntryPayload, 0)
@@ -1727,7 +1766,19 @@ func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, erro
 			legacyPayload = payloadAttr.Value
 		}
 	}
+	return entries, legacyPayload, nil
+}
+
+func (h *handler) migrateLegacyCostState(ctx context.Context, entries []costEntryPayload, legacyPayload string) ([]costEntryPayload, error) {
 	if len(entries) > 0 {
+		for _, entry := range entries {
+			if err := h.putCostEntry(ctx, entry, false); err != nil {
+				var conditionalErr *types.ConditionalCheckFailedException
+				if !errors.As(err, &conditionalErr) {
+					return nil, err
+				}
+			}
+		}
 		return entries, nil
 	}
 	if strings.TrimSpace(legacyPayload) == "" {
@@ -1738,8 +1789,11 @@ func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, erro
 		return nil, errors.New("stored cost payload is invalid json")
 	}
 	for _, entry := range legacyState.Entries {
-		if err := h.putCostEntry(ctx, entry, true); err != nil {
-			return nil, err
+		if err := h.putCostEntry(ctx, entry, false); err != nil {
+			var conditionalErr *types.ConditionalCheckFailedException
+			if !errors.As(err, &conditionalErr) {
+				return nil, err
+			}
 		}
 	}
 	return legacyState.Entries, nil
@@ -1757,7 +1811,7 @@ func (h *handler) putCostEntry(ctx context.Context, entry costEntryPayload, must
 		"updated_at": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 	}
 	input := &dynamodb.PutItemInput{
-		TableName: &h.workTableName,
+		TableName: &h.costTableName,
 		Item:      item,
 	}
 	if mustExist {
@@ -1788,7 +1842,7 @@ func (h *handler) replaceCostEntries(ctx context.Context, entries []costEntryPay
 			continue
 		}
 		if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName: &h.workTableName,
+			TableName: &h.costTableName,
 			Key: map[string]types.AttributeValue{
 				"id": &types.AttributeValueMemberS{Value: costEntryKey(entry.ID)},
 			},
