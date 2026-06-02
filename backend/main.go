@@ -773,15 +773,15 @@ func (h *handler) handleUpdateFuel(ctx context.Context, request events.APIGatewa
 }
 
 func (h *handler) listBookings(ctx context.Context) ([]bookingRecord, error) {
-	result, err := h.db.Scan(ctx, &dynamodb.ScanInput{
+	items, err := h.scanAllItems(ctx, &dynamodb.ScanInput{
 		TableName: &h.bookingTableName,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	bookings := make([]bookingRecord, 0, len(result.Items))
-	for _, item := range result.Items {
+	bookings := make([]bookingRecord, 0, len(items))
+	for _, item := range items {
 		booking, parseErr := parseBookingRecord(item)
 		if parseErr != nil {
 			log.Printf("skipping malformed booking item: %v", parseErr)
