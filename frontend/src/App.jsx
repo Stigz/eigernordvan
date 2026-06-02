@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
+import { downloadBackupExcelFile } from "./backupExcel";
 import { buildKmModeOptions, collectRecentPeople } from "./quickIntakeFlow";
 
 const apiUrl = import.meta.env.VITE_API_URL;
@@ -15,87 +15,6 @@ const normalizeApiBaseUrl = (value) => {
   }
 
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
-};
-
-const excelSheetNameLimit = 31;
-
-const safeExcelSheetName = (name, usedNames) => {
-  const cleaned = String(name || "Sheet")
-    .replace(/[\\/?*:[\]]/g, " ")
-    .trim()
-    .slice(0, excelSheetNameLimit) || "Sheet";
-  let candidate = cleaned;
-  let index = 2;
-
-  while (usedNames.has(candidate)) {
-    const suffix = ` ${index}`;
-    candidate = `${cleaned.slice(0, excelSheetNameLimit - suffix.length)}${suffix}`;
-    index += 1;
-  }
-
-  usedNames.add(candidate);
-  return candidate;
-};
-
-const flattenForExcel = (value) => {
-  if (value === null || value === undefined) {
-    return "";
-  }
-  if (Array.isArray(value) || typeof value === "object") {
-    return JSON.stringify(value);
-  }
-  return value;
-};
-
-const buildExcelRows = (items) => {
-  if (!Array.isArray(items) || items.length === 0) {
-    return [{ notice: "No rows exported for this table." }];
-  }
-
-  return items.map((item) =>
-    Object.fromEntries(
-      Object.entries(item || {}).map(([key, value]) => [key, flattenForExcel(value)]),
-    ),
-  );
-};
-
-const backupPayloadToWorkbook = (payload) => {
-  const workbook = XLSX.utils.book_new();
-  const usedNames = new Set();
-  const generatedAt = payload?.generated_at || new Date().toISOString();
-
-  XLSX.utils.book_append_sheet(
-    workbook,
-    XLSX.utils.json_to_sheet([
-      { field: "schema_version", value: payload?.schema_version || "" },
-      { field: "generated_at", value: generatedAt },
-    ]),
-    safeExcelSheetName("backup_meta", usedNames),
-  );
-
-  const tables = payload?.tables && typeof payload.tables === "object" ? payload.tables : {};
-  const tableEntries = Object.entries(tables);
-
-  if (tableEntries.length > 0) {
-    tableEntries
-      .sort(([left], [right]) => left.localeCompare(right))
-      .forEach(([label, tableExport]) => {
-        const rows = buildExcelRows(tableExport?.items);
-        XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), safeExcelSheetName(label, usedNames));
-      });
-  } else {
-    [
-      ["trips", payload?.trips],
-      ["fuel", payload?.fuel],
-      ["bookings", payload?.bookings],
-      ["work", [payload?.work || {}]],
-      ["costs", payload?.costs?.entries],
-    ].forEach(([label, rows]) => {
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(buildExcelRows(rows)), safeExcelSheetName(label, usedNames));
-    });
-  }
-
-  return { workbook, generatedAt };
 };
 
 const initialForm = {
@@ -2113,10 +2032,8 @@ export default function App() {
         return;
       }
 
-      const { workbook, generatedAt } = backupPayloadToWorkbook(payload);
-      const timestamp = generatedAt.replace(/[:.]/g, "-");
-      XLSX.writeFile(workbook, `van-backup-${timestamp}.xlsx`, { compression: true });
-      setBackupStatus({ state: "success", message: "Excel backup downloaded with one sheet per table." });
+      const { fileName } = downloadBackupExcelFile(payload);
+      setBackupStatus({ state: "success", message: `Excel backup downloaded as ${fileName} with one sheet per table.` });
     } catch (_error) {
       setBackupStatus({ state: "error", message: "Network error while downloading backup." });
     }
@@ -2594,7 +2511,7 @@ export default function App() {
               <p className="subtitle">Switch sections or download a complete table backup.</p>
             </div>
             <button type="button" className="backup-download-btn" onClick={handleDownloadBackupExcel} disabled={backupStatus.state === "loading"}>
-              {backupStatus.state === "loading" ? "Building Excel..." : "Download all data (.xlsx)"}
+              {backupStatus.state === "loading" ? "Building Excel..." : "Download all data (Excel)"}
             </button>
           </div>
           {backupStatus.state !== "idle" && <div className={`status ${backupStatus.state}`}>{backupStatus.message}</div>}
