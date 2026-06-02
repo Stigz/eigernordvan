@@ -1,4 +1,4 @@
-.PHONY: build-backend package-backend terraform-init terraform-apply deploy frontend-install frontend-build frontend-deploy
+.PHONY: build-backend package-backend terraform-init terraform-apply terraform-apply-ci deploy deploy-ci frontend-install frontend-build frontend-deploy
 
 LAMBDA_BIN=backend/dist/bootstrap
 LAMBDA_ZIP=backend/dist/lambda.zip
@@ -15,7 +15,12 @@ terraform-init:
 terraform-apply:
 	cd infra && terraform apply
 
+terraform-apply-ci:
+	cd infra && terraform apply -auto-approve
+
 deploy: package-backend terraform-init terraform-apply frontend-deploy
+
+deploy-ci: package-backend terraform-init terraform-apply-ci frontend-deploy
 
 frontend-install:
 	cd frontend && if [ -f package-lock.json ]; then npm ci; else npm install; fi
