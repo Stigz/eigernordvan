@@ -50,4 +50,8 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-central-1' }}
 
       - name: Deploy
+        env:
+          TF_BACKEND_BUCKET: ${{ vars.TF_BACKEND_BUCKET }}
+          TF_BACKEND_KEY: ${{ vars.TF_BACKEND_KEY || 'eigernordvan/terraform.tfstate' }}
+          TF_BACKEND_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
         run: make deploy-ci

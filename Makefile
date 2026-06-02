@@ -2,6 +2,8 @@
 
 LAMBDA_BIN=backend/dist/bootstrap
 LAMBDA_ZIP=backend/dist/lambda.zip
+TF_BACKEND_KEY ?= eigernordvan/terraform.tfstate
+TF_BACKEND_REGION ?= $(if $(AWS_REGION),$(AWS_REGION),eu-central-1)
 
 build-backend:
 	cd backend && GOOS=linux GOARCH=amd64 go build -o dist/bootstrap
@@ -10,7 +12,12 @@ package-backend: build-backend
 	cd backend/dist && zip -q -j lambda.zip bootstrap
 
 terraform-init:
-	cd infra && terraform init -upgrade -reconfigure
+	@test -n "$(TF_BACKEND_BUCKET)" || (echo "TF_BACKEND_BUCKET is required. Set it to the S3 bucket that stores Terraform state." >&2; exit 1)
+	cd infra && terraform init -upgrade -reconfigure \
+		-backend-config="bucket=$(TF_BACKEND_BUCKET)" \
+		-backend-config="key=$(TF_BACKEND_KEY)" \
+		-backend-config="region=$(TF_BACKEND_REGION)" \
+		-backend-config="encrypt=true"
 
 terraform-apply:
 	cd infra && terraform apply
