@@ -194,6 +194,19 @@ h2 {
   color: #475569;
 }
 
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #334155;
+  font-size: 14px;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
 .form-actions {
   display: flex;
   gap: 10px;

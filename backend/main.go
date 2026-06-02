@@ -101,32 +101,47 @@ type eventRecord struct {
 }
 
 type bookingRequest struct {
-	StartDate   string   `json:"start_date"`
-	EndDate     string   `json:"end_date"`
-	Status      string   `json:"status"`
-	GuestName   *string  `json:"guest_name,omitempty"`
-	Notes       *string  `json:"notes,omitempty"`
-	DayKM       *float64 `json:"day_km,omitempty"`
-	NightlyRate *float64 `json:"nightly_rate,omitempty"`
-	CleaningFee *float64 `json:"cleaning_fee,omitempty"`
-	KMRate      *float64 `json:"km_rate,omitempty"`
+	StartDate           string   `json:"start_date"`
+	EndDate             string   `json:"end_date"`
+	Status              string   `json:"status"`
+	GuestName           *string  `json:"guest_name,omitempty"`
+	Notes               *string  `json:"notes,omitempty"`
+	DayKM               *float64 `json:"day_km,omitempty"`
+	NightlyRate         *float64 `json:"nightly_rate,omitempty"`
+	CleaningFee         *float64 `json:"cleaning_fee,omitempty"`
+	CleaningFeeIncluded *bool    `json:"cleaning_fee_included,omitempty"`
+	KMRate              *float64 `json:"km_rate,omitempty"`
+	PaymentStatus       string   `json:"payment_status,omitempty"`
+	PaidBy              *string  `json:"paid_by,omitempty"`
+	PaidTo              *string  `json:"paid_to,omitempty"`
 }
 
 type bookingRecord struct {
-	ID            string  `json:"id"`
-	StartDate     string  `json:"start_date"`
-	EndDate       string  `json:"end_date"`
-	Status        string  `json:"status"`
-	GuestName     string  `json:"guest_name,omitempty"`
-	Notes         string  `json:"notes,omitempty"`
-	DayKM         float64 `json:"day_km"`
-	NightlyRate   float64 `json:"nightly_rate"`
-	CleaningFee   float64 `json:"cleaning_fee"`
-	KMRate        float64 `json:"km_rate"`
-	EstimateTotal float64 `json:"estimate_total"`
-	Nights        int     `json:"nights"`
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
+	ID                  string  `json:"id"`
+	StartDate           string  `json:"start_date"`
+	EndDate             string  `json:"end_date"`
+	Status              string  `json:"status"`
+	GuestName           string  `json:"guest_name,omitempty"`
+	Notes               string  `json:"notes,omitempty"`
+	DayKM               float64 `json:"day_km"`
+	NightlyRate         float64 `json:"nightly_rate"`
+	CleaningFee         float64 `json:"cleaning_fee"`
+	CleaningFeeIncluded bool    `json:"cleaning_fee_included"`
+	KMRate              float64 `json:"km_rate"`
+	EstimateTotal       float64 `json:"estimate_total"`
+	Nights              int     `json:"nights"`
+	PaymentStatus       string  `json:"payment_status"`
+	PaidBy              string  `json:"paid_by,omitempty"`
+	PaidTo              string  `json:"paid_to,omitempty"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
+}
+
+type bookingAvailabilityRecord struct {
+	ID        string `json:"id"`
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
+	Status    string `json:"status"`
 }
 
 type workEntryPayload struct {
@@ -863,7 +878,16 @@ func (h *handler) handleListBookings(ctx context.Context, request events.APIGate
 		return filtered[i].StartDate < filtered[j].StartDate
 	})
 
-	return h.respond(http.StatusOK, map[string]any{"items": filtered}), nil
+	visibility := strings.TrimSpace(request.QueryStringParameters["visibility"])
+	if visibility == "availability" || visibility == "public" {
+		availability := make([]bookingAvailabilityRecord, 0, len(filtered))
+		for _, booking := range filtered {
+			availability = append(availability, bookingAvailabilityFromRecord(booking))
+		}
+		return h.respond(http.StatusOK, map[string]any{"items": availability, "visibility": "availability"}), nil
+	}
+
+	return h.respond(http.StatusOK, map[string]any{"items": filtered, "visibility": "owner"}), nil
 }
 
 func (h *handler) handleGetBooking(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
@@ -1302,6 +1326,13 @@ func parseBookingRecord(item map[string]types.AttributeValue) (bookingRecord, er
 		}
 		return parsed, nil
 	}
+	getBoolOptional := func(key string, fallback bool) bool {
+		value, ok := item[key].(*types.AttributeValueMemberBOOL)
+		if !ok {
+			return fallback
+		}
+		return value.Value
+	}
 
 	id, err := getStringRequired("id")
 	if err != nil {
@@ -1352,21 +1383,30 @@ func parseBookingRecord(item map[string]types.AttributeValue) (bookingRecord, er
 		return bookingRecord{}, err
 	}
 
+	paymentStatus := getStringOptional("payment_status")
+	if paymentStatus == "" {
+		paymentStatus = "unpaid"
+	}
+
 	return bookingRecord{
-		ID:            id,
-		StartDate:     startDate,
-		EndDate:       endDate,
-		Status:        status,
-		GuestName:     getStringOptional("guest_name"),
-		Notes:         getStringOptional("notes"),
-		DayKM:         dayKM,
-		NightlyRate:   nightlyRate,
-		CleaningFee:   cleaningFee,
-		KMRate:        kmRate,
-		EstimateTotal: estimateTotal,
-		Nights:        int(nightsRaw),
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
+		ID:                  id,
+		StartDate:           startDate,
+		EndDate:             endDate,
+		Status:              status,
+		GuestName:           getStringOptional("guest_name"),
+		Notes:               getStringOptional("notes"),
+		DayKM:               dayKM,
+		NightlyRate:         nightlyRate,
+		CleaningFee:         cleaningFee,
+		CleaningFeeIncluded: getBoolOptional("cleaning_fee_included", cleaningFee > 0),
+		KMRate:              kmRate,
+		EstimateTotal:       estimateTotal,
+		Nights:              int(nightsRaw),
+		PaymentStatus:       paymentStatus,
+		PaidBy:              getStringOptional("paid_by"),
+		PaidTo:              getStringOptional("paid_to"),
+		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
 	}, nil
 }
 
@@ -1409,28 +1449,59 @@ func normalizeAndValidateBooking(payload bookingRequest) (bookingRecord, error) 
 
 	dayKM := valueOrDefault(payload.DayKM, 0)
 	nightlyRate := valueOrDefault(payload.NightlyRate, 100)
-	cleaningFee := valueOrDefault(payload.CleaningFee, 100)
+	cleaningFeeIncluded := true
+	if payload.CleaningFeeIncluded != nil {
+		cleaningFeeIncluded = *payload.CleaningFeeIncluded
+	}
+	cleaningFee := 100.0
+	if !cleaningFeeIncluded {
+		cleaningFee = 0
+	}
+	if payload.CleaningFee != nil {
+		cleaningFee = *payload.CleaningFee
+		if payload.CleaningFeeIncluded == nil {
+			cleaningFeeIncluded = cleaningFee > 0
+		}
+	}
 	kmRate := valueOrDefault(payload.KMRate, 0.50)
 
 	if dayKM < 0 || nightlyRate < 0 || cleaningFee < 0 || kmRate < 0 {
 		return bookingRecord{}, errors.New("day_km, nightly_rate, cleaning_fee, and km_rate must be non-negative")
 	}
 
+	paymentStatus := strings.TrimSpace(payload.PaymentStatus)
+	if paymentStatus == "" {
+		paymentStatus = "unpaid"
+	}
+	if paymentStatus != "unpaid" && paymentStatus != "partial" && paymentStatus != "paid" {
+		return bookingRecord{}, errors.New("payment_status must be unpaid, partial, or paid")
+	}
+	paidBy := safeString(payload.PaidBy)
+	paidTo := safeString(payload.PaidTo)
+	if paymentStatus == "unpaid" {
+		paidBy = ""
+		paidTo = ""
+	}
+
 	nights := int(endDate.Sub(startDate).Hours() / 24)
 	estimate := calculateBookingEstimate(nights, nightlyRate, cleaningFee, dayKM, kmRate)
 
 	return bookingRecord{
-		StartDate:     startDate.Format("2006-01-02"),
-		EndDate:       endDate.Format("2006-01-02"),
-		Status:        status,
-		GuestName:     safeString(payload.GuestName),
-		Notes:         safeString(payload.Notes),
-		DayKM:         dayKM,
-		NightlyRate:   nightlyRate,
-		CleaningFee:   cleaningFee,
-		KMRate:        kmRate,
-		EstimateTotal: estimate,
-		Nights:        nights,
+		StartDate:           startDate.Format("2006-01-02"),
+		EndDate:             endDate.Format("2006-01-02"),
+		Status:              status,
+		GuestName:           safeString(payload.GuestName),
+		Notes:               safeString(payload.Notes),
+		DayKM:               dayKM,
+		NightlyRate:         nightlyRate,
+		CleaningFee:         cleaningFee,
+		CleaningFeeIncluded: cleaningFeeIncluded,
+		KMRate:              kmRate,
+		EstimateTotal:       estimate,
+		Nights:              nights,
+		PaymentStatus:       paymentStatus,
+		PaidBy:              paidBy,
+		PaidTo:              paidTo,
 	}, nil
 }
 
@@ -1456,6 +1527,15 @@ func validateBookingOverlap(candidate bookingRecord, bookings []bookingRecord, c
 
 func rangesOverlap(startA, endA, startB, endB string) bool {
 	return startA < endB && startB < endA
+}
+
+func bookingAvailabilityFromRecord(booking bookingRecord) bookingAvailabilityRecord {
+	return bookingAvailabilityRecord{
+		ID:        booking.ID,
+		StartDate: booking.StartDate,
+		EndDate:   booking.EndDate,
+		Status:    booking.Status,
+	}
 }
 
 func bookingOverlapsRange(booking bookingRecord, fromDate, toDate *time.Time) bool {
@@ -1507,25 +1587,33 @@ func bookingItemFromRecord(id string, booking bookingRecord, updatedAt, existing
 	}
 
 	item := map[string]types.AttributeValue{
-		"id":             &types.AttributeValueMemberS{Value: id},
-		"start_date":     &types.AttributeValueMemberS{Value: booking.StartDate},
-		"end_date":       &types.AttributeValueMemberS{Value: booking.EndDate},
-		"status":         &types.AttributeValueMemberS{Value: booking.Status},
-		"day_km":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.DayKM)},
-		"nightly_rate":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.NightlyRate)},
-		"cleaning_fee":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.CleaningFee)},
-		"km_rate":        &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.KMRate)},
-		"estimate_total": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.EstimateTotal)},
-		"nights":         &types.AttributeValueMemberN{Value: strconv.Itoa(booking.Nights)},
-		"month_key":      &types.AttributeValueMemberS{Value: booking.StartDate[:7]},
-		"created_at":     &types.AttributeValueMemberS{Value: createdAt},
-		"updated_at":     &types.AttributeValueMemberS{Value: updatedAt},
+		"id":                    &types.AttributeValueMemberS{Value: id},
+		"start_date":            &types.AttributeValueMemberS{Value: booking.StartDate},
+		"end_date":              &types.AttributeValueMemberS{Value: booking.EndDate},
+		"status":                &types.AttributeValueMemberS{Value: booking.Status},
+		"day_km":                &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.DayKM)},
+		"nightly_rate":          &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.NightlyRate)},
+		"cleaning_fee":          &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.CleaningFee)},
+		"cleaning_fee_included": &types.AttributeValueMemberBOOL{Value: booking.CleaningFeeIncluded},
+		"km_rate":               &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.KMRate)},
+		"estimate_total":        &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", booking.EstimateTotal)},
+		"nights":                &types.AttributeValueMemberN{Value: strconv.Itoa(booking.Nights)},
+		"payment_status":        &types.AttributeValueMemberS{Value: booking.PaymentStatus},
+		"month_key":             &types.AttributeValueMemberS{Value: booking.StartDate[:7]},
+		"created_at":            &types.AttributeValueMemberS{Value: createdAt},
+		"updated_at":            &types.AttributeValueMemberS{Value: updatedAt},
 	}
 	if strings.TrimSpace(booking.GuestName) != "" {
 		item["guest_name"] = &types.AttributeValueMemberS{Value: strings.TrimSpace(booking.GuestName)}
 	}
 	if strings.TrimSpace(booking.Notes) != "" {
 		item["notes"] = &types.AttributeValueMemberS{Value: strings.TrimSpace(booking.Notes)}
+	}
+	if strings.TrimSpace(booking.PaidBy) != "" {
+		item["paid_by"] = &types.AttributeValueMemberS{Value: strings.TrimSpace(booking.PaidBy)}
+	}
+	if strings.TrimSpace(booking.PaidTo) != "" {
+		item["paid_to"] = &types.AttributeValueMemberS{Value: strings.TrimSpace(booking.PaidTo)}
 	}
 	return item
 }
