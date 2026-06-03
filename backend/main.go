@@ -172,6 +172,7 @@ type handler struct {
 	tableName        string
 	bookingTableName string
 	workTableName    string
+	costTableName    string
 	corsOrigin       string
 	db               *dynamodb.Client
 }
@@ -195,6 +196,10 @@ func main() {
 	if workTableName == "" {
 		panic("WORK_TABLE_NAME is required")
 	}
+	costTableName := os.Getenv("COST_TABLE_NAME")
+	if costTableName == "" {
+		costTableName = workTableName
+	}
 
 	corsOrigin := os.Getenv("CORS_ALLOW_ORIGIN")
 	if corsOrigin == "" {
@@ -205,6 +210,7 @@ func main() {
 		tableName:        tableName,
 		bookingTableName: bookingTableName,
 		workTableName:    workTableName,
+		costTableName:    costTableName,
 		corsOrigin:       corsOrigin,
 		db:               dynamodb.NewFromConfig(cfg),
 	}
@@ -240,6 +246,13 @@ func normalizeRoutePath(request events.APIGatewayV2HTTPRequest) string {
 	}
 
 	return path
+}
+
+func (h *handler) costEntriesTableName() string {
+	if h.costTableName != "" {
+		return h.costTableName
+	}
+	return h.workTableName
 }
 
 func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -1031,10 +1044,14 @@ func (h *handler) handleExportBackup(ctx context.Context) (events.APIGatewayV2HT
 }
 
 func (h *handler) exportAllTables(ctx context.Context) (map[string]backupTableExport, error) {
+	costTableName := h.costEntriesTableName()
 	tableNames := map[string]string{
 		"ledger_events": h.tableName,
 		"bookings":      h.bookingTableName,
 		"work":          h.workTableName,
+	}
+	if costTableName != "" && costTableName != h.workTableName {
+		tableNames["costs"] = costTableName
 	}
 
 	exports := make(map[string]backupTableExport, len(tableNames))
@@ -1216,8 +1233,9 @@ func (h *handler) handleDeleteCost(ctx context.Context, id string) (events.APIGa
 	if trimmedID == "" {
 		return h.respondError(http.StatusBadRequest, "cost id is required"), nil
 	}
+	costTableName := h.costEntriesTableName()
 	if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: &h.workTableName,
+		TableName: &costTableName,
 		Key: map[string]types.AttributeValue{
 			"id": &types.AttributeValueMemberS{Value: costEntryKey(trimmedID)},
 		},
@@ -1773,9 +1791,33 @@ func parseCostEntryItem(item map[string]types.AttributeValue) (costEntryPayload,
 }
 
 func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, error) {
-	items, err := h.scanAllItems(ctx, h.workTableName)
+	costTableName := h.costEntriesTableName()
+	entries, legacyPayload, err := h.listCostEntriesFromTable(ctx, costTableName)
 	if err != nil {
 		return nil, err
+	}
+	if len(entries) > 0 || strings.TrimSpace(legacyPayload) != "" {
+		return h.migrateLegacyCostState(ctx, entries, legacyPayload)
+	}
+
+	if costTableName == h.workTableName {
+		return []costEntryPayload{}, nil
+	}
+
+	legacyEntries, legacyWorkPayload, err := h.listCostEntriesFromTable(ctx, h.workTableName)
+	if err != nil {
+		return nil, err
+	}
+	if len(legacyEntries) == 0 && strings.TrimSpace(legacyWorkPayload) == "" {
+		return []costEntryPayload{}, nil
+	}
+	return h.migrateLegacyCostState(ctx, legacyEntries, legacyWorkPayload)
+}
+
+func (h *handler) listCostEntriesFromTable(ctx context.Context, tableName string) ([]costEntryPayload, string, error) {
+	items, err := h.scanAllItems(ctx, tableName)
+	if err != nil {
+		return nil, "", err
 	}
 
 	entries := make([]costEntryPayload, 0)
@@ -1795,18 +1837,28 @@ func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, erro
 			legacyPayload = payloadAttr.Value
 		}
 	}
+
+	return entries, legacyPayload, nil
+}
+
+func (h *handler) migrateLegacyCostState(ctx context.Context, entries []costEntryPayload, legacyPayload string) ([]costEntryPayload, error) {
 	if len(entries) > 0 {
 		return entries, nil
 	}
 	if strings.TrimSpace(legacyPayload) == "" {
 		return []costEntryPayload{}, nil
 	}
+
 	var legacyState costStatePayload
 	if err := json.Unmarshal([]byte(legacyPayload), &legacyState); err != nil {
 		return nil, errors.New("stored cost payload is invalid json")
 	}
 	for _, entry := range legacyState.Entries {
-		if err := h.putCostEntry(ctx, entry, true); err != nil {
+		if err := h.putCostEntry(ctx, entry, false); err != nil {
+			var conditionalErr *types.ConditionalCheckFailedException
+			if errors.As(err, &conditionalErr) {
+				continue
+			}
 			return nil, err
 		}
 	}
@@ -1824,8 +1876,9 @@ func (h *handler) putCostEntry(ctx context.Context, entry costEntryPayload, must
 		"payload":    &types.AttributeValueMemberS{Value: string(payloadBytes)},
 		"updated_at": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 	}
+	costTableName := h.costEntriesTableName()
 	input := &dynamodb.PutItemInput{
-		TableName: &h.workTableName,
+		TableName: &costTableName,
 		Item:      item,
 	}
 	if mustExist {
@@ -1838,6 +1891,7 @@ func (h *handler) putCostEntry(ctx context.Context, entry costEntryPayload, must
 }
 
 func (h *handler) replaceCostEntries(ctx context.Context, entries []costEntryPayload) error {
+	costTableName := h.costEntriesTableName()
 	existing, err := h.listCostEntries(ctx)
 	if err != nil {
 		return err
@@ -1856,7 +1910,7 @@ func (h *handler) replaceCostEntries(ctx context.Context, entries []costEntryPay
 			continue
 		}
 		if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName: &h.workTableName,
+			TableName: &costTableName,
 			Key: map[string]types.AttributeValue{
 				"id": &types.AttributeValueMemberS{Value: costEntryKey(entry.ID)},
 			},
