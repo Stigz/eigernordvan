@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { downloadBackupExcelFile } from "./backupExcel";
+import { BackupDownloadCard } from "./BackupDownloadCard";
 import { buildKmModeOptions, collectRecentPeople } from "./quickIntakeFlow";
 
 const apiUrl = import.meta.env.VITE_API_URL;
@@ -840,7 +840,6 @@ export default function App() {
   const [quickIntakeStage, setQuickIntakeStage] = useState("person");
   const [quickIntakeForm, setQuickIntakeForm] = useState({ start_km: "", end_km: "", liters: "", cost_chf: "", odometer_km: "" });
   const [quickIntakeStatus, setQuickIntakeStatus] = useState({ state: "idle", message: "" });
-  const [backupStatus, setBackupStatus] = useState({ state: "idle", message: "" });
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
   const latestEndKm = useMemo(
@@ -2012,33 +2011,6 @@ export default function App() {
     }
   };
 
-  const handleDownloadBackupExcel = async () => {
-    if (!apiBaseUrl) {
-      setBackupStatus({
-        state: "error",
-        message: "Missing VITE_API_URL configuration. Set it to your API Gateway URL and rebuild.",
-      });
-      return;
-    }
-
-    setBackupStatus({ state: "loading", message: "Preparing Excel backup..." });
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/backup/export`);
-      const payload = await response.json();
-
-      if (!response.ok) {
-        setBackupStatus({ state: "error", message: payload.error || "Could not download backup." });
-        return;
-      }
-
-      const { fileName } = downloadBackupExcelFile(payload);
-      setBackupStatus({ state: "success", message: `Excel backup downloaded as ${fileName} with one sheet per table.` });
-    } catch (_error) {
-      setBackupStatus({ state: "error", message: "Network error while downloading backup." });
-    }
-  };
-
   const handleCostSubmit = async (event) => {
     event.preventDefault();
     const amount = Number(costForm.amount_chf);
@@ -2504,17 +2476,7 @@ export default function App() {
         </section>
       )}
       <main className="layout layout-stack">
-        <section className="card view-switcher-card">
-          <div className="view-switcher-header">
-            <div>
-              <p className="eyebrow">Views</p>
-              <p className="subtitle">Switch sections or download a complete table backup.</p>
-            </div>
-            <button type="button" className="backup-download-btn" onClick={handleDownloadBackupExcel} disabled={backupStatus.state === "loading"}>
-              {backupStatus.state === "loading" ? "Building Excel..." : "Download all data (Excel)"}
-            </button>
-          </div>
-          {backupStatus.state !== "idle" && <div className={`status ${backupStatus.state}`}>{backupStatus.message}</div>}
+        <BackupDownloadCard apiBaseUrl={apiBaseUrl}>
           <div className="view-switcher" role="tablist" aria-label="Ledger views">
             {[
               { id: "km", label: "KM" },
@@ -2538,7 +2500,7 @@ export default function App() {
               </button>
             ))}
           </div>
-        </section>
+        </BackupDownloadCard>
 
         {activeView === "km" && (
           <div className="panel-grid">
