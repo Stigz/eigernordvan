@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { BackupDownloadCard } from "./BackupDownloadCard";
 import BookingPanel from "./booking/BookingPanel";
 import { buildKmModeOptions, collectRecentPeople } from "./quickIntakeFlow";
 
@@ -2197,8 +2198,7 @@ export default function App() {
         </section>
       )}
       <main className="layout layout-stack">
-        <section className="card view-switcher-card">
-          <p className="eyebrow">Views</p>
+        <BackupDownloadCard apiBaseUrl={apiBaseUrl}>
           <div className="view-switcher" role="tablist" aria-label="Ledger views">
             {[
               { id: "km", label: "KM" },
@@ -2222,7 +2222,7 @@ export default function App() {
               </button>
             ))}
           </div>
-        </section>
+        </BackupDownloadCard>
 
         {activeView === "km" && (
           <div className="panel-grid">
