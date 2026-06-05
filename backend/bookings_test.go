@@ -55,6 +55,39 @@ func TestNormalizeBookingCanSkipCleaningFee(t *testing.T) {
 	}
 }
 
+func TestNormalizeBookingSupportsInternalZeroRateBooking(t *testing.T) {
+	owner := "Luki"
+	includeCleaning := false
+	zero := 0.0
+	record, err := normalizeAndValidateBooking(bookingRequest{
+		StartDate:           "2026-04-10",
+		EndDate:             "2026-04-13",
+		Status:              "booked",
+		GuestName:           &owner,
+		NightlyRate:         &zero,
+		CleaningFee:         &zero,
+		CleaningFeeIncluded: &includeCleaning,
+		KMRate:              &zero,
+		DayKM:               &zero,
+	})
+	if err != nil {
+		t.Fatalf("expected valid internal booking, got %v", err)
+	}
+	if record.GuestName != owner || record.Nights != 3 {
+		t.Fatalf("expected owner and days to be retained, got owner=%q nights=%d", record.GuestName, record.Nights)
+	}
+	if record.EstimateTotal != 0 || record.NightlyRate != 0 || record.CleaningFee != 0 || record.KMRate != 0 || record.CleaningFeeIncluded {
+		t.Fatalf(
+			"expected zero-rate internal booking, got total=%v nightly=%v cleaning=%v km_rate=%v cleaning_included=%v",
+			record.EstimateTotal,
+			record.NightlyRate,
+			record.CleaningFee,
+			record.KMRate,
+			record.CleaningFeeIncluded,
+		)
+	}
+}
+
 func TestNormalizeBookingTracksPaidByAndPaidTo(t *testing.T) {
 	paidBy := "Guest"
 	paidTo := "Nic"
