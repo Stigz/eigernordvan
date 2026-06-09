@@ -49,6 +49,36 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION || 'eu-central-1' }}
 
+      - name: Pre-deploy live backup
+        env:
+          TF_BACKEND_BUCKET: ${{ vars.TF_BACKEND_BUCKET }}
+          TF_BACKEND_KEY: ${{ vars.TF_BACKEND_KEY || 'eigernordvan/terraform.tfstate' }}
+          TF_BACKEND_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+        run: |
+          make terraform-init
+          api_base_url="$(cd infra && terraform output -raw api_url)"
+          backup_bucket="$(cd infra && terraform output -raw backup_bucket_name)"
+
+          ./scripts/export-backup.sh "$api_base_url" backups/predeploy
+
+          prefix="predeploy/${GITHUB_RUN_ID}"
+          aws s3 cp backups/predeploy "s3://${backup_bucket}/${prefix}/" \
+            --recursive \
+            --exclude "*" \
+            --include "*.json.gz" \
+            --include "*.sha256"
+
+          {
+            echo "### Pre-deploy backup"
+            echo
+            echo "- Backup uploaded to \`s3://${backup_bucket}/${prefix}/\`"
+            echo
+            echo "Checksum:"
+            echo '```'
+            cat backups/predeploy/*.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Deploy
         env:
           TF_BACKEND_BUCKET: ${{ vars.TF_BACKEND_BUCKET }}
