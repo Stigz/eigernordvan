@@ -1,0 +1,43 @@
+name: Apply Accounting Refactor Patch
+
+on:
+  push:
+    branches:
+      - codex/accounting-refactor
+    paths:
+      - ".github/workflows/apply-accounting-refactor.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/accounting-refactor
+          fetch-depth: 0
+
+      - name: Apply staged patch
+        run: |
+          set -euo pipefail
+
+          cat .codex/accounting-refactor.patch.gz.b64.part* > /tmp/accounting-refactor.patch.gz.b64
+          test "$(wc -c < /tmp/accounting-refactor.patch.gz.b64 | tr -d ' ')" = "61704"
+          echo "27f7dfd44c4fc96feb2be69d0d0dd82d50dda93c9c46464115e9aec3ef4e6b67  /tmp/accounting-refactor.patch.gz.b64" | sha256sum -c -
+
+          base64 -d /tmp/accounting-refactor.patch.gz.b64 | gunzip > /tmp/accounting-refactor.patch
+          test "$(wc -c < /tmp/accounting-refactor.patch | tr -d ' ')" = "233269"
+          echo "0d961aaaf0f8f29dbd2cfe7301a31527b346adc0d46a6e46f2bc78c77256aec3  /tmp/accounting-refactor.patch" | sha256sum -c -
+
+          git apply --index /tmp/accounting-refactor.patch
+          git rm --ignore-unmatch .codex/accounting-refactor.patch.gz.b64.part*
+          git rm --ignore-unmatch .github/workflows/apply-accounting-refactor.yml
+
+          git status --short
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add accounting refactor"
+          git push
