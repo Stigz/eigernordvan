@@ -1,0 +1,175 @@
+{
+  "period": "2026-06",
+  "people": ["Nic", "Kayla"],
+  "settings": {
+    "schema_version": "2026-06-05",
+    "km_rate_chf": 0.5,
+    "night_rate_chf": 50,
+    "workday_rate_chf": 100,
+    "monthly_payment_chf": 50,
+    "reserve_target_chf": 2000,
+    "surplus_reserve_percent": 70,
+    "surplus_historical_repayment_percent": 30
+  },
+  "trips": [
+    {
+      "id": "trip-1",
+      "timestamp": "2026-06-10T12:00:00Z",
+      "user_name": "Nic",
+      "delta_km": 120,
+      "event_type": "trip_manual"
+    },
+    {
+      "id": "trip-outside-period",
+      "timestamp": "2026-07-10T12:00:00Z",
+      "user_name": "Kayla",
+      "delta_km": 99,
+      "event_type": "trip_manual"
+    }
+  ],
+  "bookings": [
+    {
+      "id": "booking-usage-1",
+      "start_date": "2026-06-12",
+      "end_date": "2026-06-14",
+      "status": "booked",
+      "guest_name": "Kayla",
+      "nights": 2,
+      "payment_status": "unpaid"
+    },
+    {
+      "id": "booking-income-1",
+      "start_date": "2026-06-20",
+      "end_date": "2026-06-21",
+      "status": "booked",
+      "guest_name": "External Guest",
+      "nights": 1,
+      "estimate_total": 300,
+      "payment_status": "paid"
+    }
+  ],
+  "work_entries": [
+    {
+      "id": "work-1",
+      "person": "Nic",
+      "month": "2026-06",
+      "days": 0.5,
+      "work_notes": "Synthetic fixture half-day"
+    }
+  ],
+  "cost_entries": [
+    {
+      "id": "cost-shared-1",
+      "date": "2026-06-05",
+      "type": "expense",
+      "amount_chf": 120,
+      "description": "Synthetic insurance",
+      "category": "insurance",
+      "paid_by": "Nic",
+      "participants": ["Nic", "Kayla"],
+      "bucket": "shared_running",
+      "funding_account": "personal",
+      "allocation_basis": "equal"
+    },
+    {
+      "id": "transfer-1",
+      "date": "2026-06-06",
+      "type": "transfer",
+      "amount_chf": 50,
+      "description": "Kayla monthly payment",
+      "category": "settlement",
+      "from_person": "Kayla",
+      "to_person": "shared_pot",
+      "bucket": "settlement",
+      "funding_account": "personal",
+      "allocation_basis": "none"
+    },
+    {
+      "id": "historical-synthetic:B0001",
+      "date": "2026-01-01",
+      "type": "expense",
+      "amount_chf": 8900,
+      "description": "Synthetic historical vehicle basis",
+      "category": "vehicle_purchase",
+      "paid_by": "Nic",
+      "participants": ["Nic", "Kayla"],
+      "historical": true,
+      "historical_only": true,
+      "bucket": "historical_investment",
+      "funding_account": "personal",
+      "allocation_basis": "none"
+    }
+  ],
+  "expected": {
+    "monthly_contributions_chf": 100,
+    "shared_pot": {
+      "inflow_chf": 560,
+      "outflow_chf": 478.1,
+      "contributions_due_chf": 100,
+      "contributions_paid_chf": 50,
+      "usage_charges_chf": 160,
+      "external_income_chf": 300,
+      "current_costs_chf": 120,
+      "reserve_allocation_chf": 273,
+      "historical_repayment_chf": 35.1,
+      "balance_chf": 81.9
+    },
+    "usage_by_person": {
+      "Nic": 60,
+      "Kayla": 100
+    },
+    "work_credits_by_person": {
+      "Nic": 50,
+      "Kayla": 0
+    },
+    "km_by_person": {
+      "Nic": 120,
+      "Kayla": 0
+    },
+    "nights_by_person": {
+      "Nic": 0,
+      "Kayla": 2
+    },
+    "bucket_totals": {
+      "usage": 160,
+      "income": 300,
+      "shared_running": 120,
+      "settlement": 50,
+      "work_credit": 50
+    },
+    "person_balances": {
+      "Nic": 60,
+      "Kayla": -100
+    },
+    "settlement_balances": {
+      "Nic": 60,
+      "Kayla": -100,
+      "shared_pot": 40
+    },
+    "suggested_settlements": [
+      {
+        "from_person": "Kayla",
+        "to_person": "shared_pot",
+        "amount_chf": 100,
+        "reason": "Shared pot due"
+      },
+      {
+        "from_person": "shared_pot",
+        "to_person": "Nic",
+        "amount_chf": 60,
+        "reason": "Shared pot reimbursement"
+      }
+    ],
+    "source_counts": {
+      "cost_entries": 2,
+      "historical_cost_entries": 1,
+      "trip_entries": 1,
+      "booking_entries": 2,
+      "work_entries": 1
+    },
+    "historical": {
+      "investment_chf": 8900,
+      "rows": 1
+    }
+  }
+}

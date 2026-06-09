@@ -1,5 +1,17 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import AccountingDashboard from "./AccountingDashboard";
+import { messageFromApiPayload } from "./apiMessages";
 import { BackupDownloadCard } from "./BackupDownloadCard";
+import {
+  accountingBucketLabelMap,
+  accountingBucketOptions,
+  allocationBasisLabelMap,
+  allocationBasisOptions,
+  fundingAccountLabelMap,
+  fundingAccountOptions,
+  inferAccountingBucket,
+  normalizeCostEntryForAccounting,
+} from "./accounting";
 import BookingPanel from "./booking/BookingPanel";
 import { buildKmModeOptions, collectRecentPeople } from "./quickIntakeFlow";
 
@@ -45,6 +57,11 @@ const initialGasForm = {
   note: "",
 };
 
+const corePeople = ["Nic", "Kayla", "Jeanne", "Lüku"];
+const sharedPotParticipant = { id: "shared_pot", label: "Shared pot" };
+const transferParties = [...corePeople.map((person) => ({ id: person, label: person })), sharedPotParticipant];
+const formatTransferParty = (value) => transferParties.find((party) => party.id === value)?.label || value;
+
 const initialCostForm = {
   date: "",
   type: "expense",
@@ -52,11 +69,14 @@ const initialCostForm = {
   description: "",
   category: "general",
   paid_by: "Nic",
-  participants: ["Nic", "Kayla", "Jeanne", "Lüku"],
+  participants: corePeople,
   from_person: "Nic",
-  to_person: "Kayla",
+  to_person: "shared_pot",
+  bucket: "shared_running",
+  funding_account: "personal",
+  allocation_basis: "equal",
   notes: "",
-  historical_only: true,
+  historical_only: false,
 };
 
 const costCategories = [
@@ -191,7 +211,7 @@ const saveProfiles = (profiles) => {
 
 const fuelStorageKey = "van_fuel_entries_v1";
 const workStorageKey = "van_work_planner_v1";
-const workPeople = ["Nic", "Kayla", "Jeanne", "Lüku"];
+const workPeople = corePeople;
 const initialWorkEntryForm = {
   person: workPeople[0],
   month: formatDateISO(new Date()).slice(0, 7),
@@ -374,10 +394,12 @@ const parseCostState = () => {
       return { entries: [] };
     }
     return {
-      entries: parsed.entries.map((entry) => ({
-        ...entry,
-        category: entry?.category || inferCostCategory(entry?.description, entry?.type),
-      })),
+      entries: parsed.entries.map((entry) =>
+        normalizeCostEntryForAccounting({
+          ...entry,
+          category: entry?.category || inferCostCategory(entry?.description, entry?.type),
+        }),
+      ),
     };
   } catch (_error) {
     return { entries: [] };
@@ -385,7 +407,7 @@ const parseCostState = () => {
 };
 
 const saveCostState = (state) => {
-  const entries = Array.isArray(state?.entries) ? state.entries : [];
+  const entries = Array.isArray(state?.entries) ? state.entries.map(normalizeCostEntryForAccounting) : [];
   localStorage.setItem(costStorageKey, JSON.stringify({ entries }));
 };
 
@@ -783,6 +805,7 @@ export default function App() {
   const [quickIntakeStage, setQuickIntakeStage] = useState("person");
   const [quickIntakeForm, setQuickIntakeForm] = useState({ start_km: "", end_km: "", liters: "", cost_chf: "", odometer_km: "" });
   const [quickIntakeStatus, setQuickIntakeStatus] = useState({ state: "idle", message: "" });
+  const skipNextWorkPersistRef = useRef(false);
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
   const latestEndKm = useMemo(
@@ -1356,6 +1379,7 @@ export default function App() {
           return;
         }
         const migrated = parseWorkStateFromPayload(payload);
+        skipNextWorkPersistRef.current = true;
         setWorkState(migrated);
         saveWorkState(migrated);
         setWorkSyncStatus({ state: "success", message: "Work workspace synced." });
@@ -1369,21 +1393,36 @@ export default function App() {
     loadWorkFromApi();
   }, [apiBaseUrl]);
 
+  const persistWorkStateToApi = async (nextState, { skipNextLocalPersist = false } = {}) => {
+    const response = await fetch(`${apiBaseUrl}/work`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nextState),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      return { ok: false, message: messageFromApiPayload(payload, "Could not save work workspace.") };
+    }
+    if (skipNextLocalPersist) {
+      skipNextWorkPersistRef.current = true;
+    }
+    return { ok: true, payload };
+  };
+
   useEffect(() => {
     const persistWorkToApi = async () => {
       if (!apiBaseUrl || !isWorkLoaded) {
         return;
       }
+      if (skipNextWorkPersistRef.current) {
+        skipNextWorkPersistRef.current = false;
+        return;
+      }
 
       try {
-        const response = await fetch(`${apiBaseUrl}/work`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(workState),
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          setWorkSyncStatus({ state: "error", message: payload.error || "Could not save work workspace." });
+        const result = await persistWorkStateToApi(workState);
+        if (!result.ok) {
+          setWorkSyncStatus({ state: "error", message: result.message });
           return;
         }
         setWorkSyncStatus({ state: "success", message: "Work workspace saved." });
@@ -1411,10 +1450,12 @@ export default function App() {
         }
         const nextState = {
           entries: Array.isArray(payload.entries)
-            ? payload.entries.map((entry) => ({
-                ...entry,
-                category: entry?.category || inferCostCategory(entry?.description, entry?.type),
-              }))
+            ? payload.entries.map((entry) =>
+                normalizeCostEntryForAccounting({
+                  ...entry,
+                  category: entry?.category || inferCostCategory(entry?.description, entry?.type),
+                }),
+              )
             : [],
         };
         setCostState(nextState);
@@ -1479,7 +1520,31 @@ export default function App() {
       });
       return;
     }
-    setCostForm((prev) => ({ ...prev, [name]: type === "number" ? value : value }));
+    setCostForm((prev) => {
+      const next = { ...prev, [name]: type === "number" ? value : value };
+      if (name === "type" && value === "transfer") {
+        return {
+          ...next,
+          category: "settlement",
+          bucket: "settlement",
+          funding_account: "personal",
+          allocation_basis: "none",
+          to_person: next.to_person || "shared_pot",
+        };
+      }
+      if (name === "type" || name === "category") {
+        const inferredBucket = inferAccountingBucket({
+          ...next,
+          category: next.category || inferCostCategory(next.description, next.type),
+        });
+        return {
+          ...next,
+          bucket: inferredBucket,
+          allocation_basis: inferredBucket === "usage" ? "km_night_usage" : inferredBucket === "income" ? "none" : "equal",
+        };
+      }
+      return next;
+    });
   };
 
   const handleCostFilterChange = (event) => {
@@ -1535,7 +1600,7 @@ export default function App() {
       const payload = await response.json();
 
       if (!response.ok) {
-        setStatus({ state: "error", message: payload.error || "Something went wrong." });
+        setStatus({ state: "error", message: messageFromApiPayload(payload, "Something went wrong.") });
         return;
       }
 
@@ -1661,7 +1726,7 @@ export default function App() {
       const response = await fetch(`${apiBaseUrl}/trip/${trip.id}`, { method: "DELETE" });
       const payload = await response.json();
       if (!response.ok) {
-        setStatus({ state: "error", message: payload.error || "Could not delete this trip." });
+        setStatus({ state: "error", message: messageFromApiPayload(payload, "Could not delete this trip.") });
         return;
       }
       if (editId === trip.id) {
@@ -1697,7 +1762,7 @@ export default function App() {
     setGasStatus({ state: "idle", message: "" });
   };
 
-  const handleAddWorkEntry = (event) => {
+  const handleAddWorkEntry = async (event) => {
     event.preventDefault();
     const days = Number(workEntryForm.days);
     if (!workEntryForm.person || !workEntryForm.month || !Number.isFinite(days) || days < 0) {
@@ -1723,13 +1788,49 @@ export default function App() {
       created_at: now,
       updated_at: now,
     });
-    setWorkState((prev) => ({ entries: [entry, ...(prev.entries || [])] }));
+    const nextState = { entries: [entry, ...(workState.entries || [])] };
+    if (apiBaseUrl && !isWorkLoaded) {
+      setWorkSyncStatus({ state: "error", message: "Work workspace is still loading. Try again in a moment." });
+      return;
+    }
+    if (apiBaseUrl) {
+      setWorkSyncStatus({ state: "loading", message: "Saving work entry..." });
+      try {
+        const result = await persistWorkStateToApi(nextState, { skipNextLocalPersist: true });
+        if (!result.ok) {
+          setWorkSyncStatus({ state: "error", message: result.message });
+          return;
+        }
+      } catch (_error) {
+        setWorkSyncStatus({ state: "error", message: "Network error while saving work entry." });
+        return;
+      }
+    }
+    setWorkState(nextState);
     setWorkEntryForm((prev) => ({ ...initialWorkEntryForm, person: prev.person, month: prev.month }));
     setWorkSyncStatus({ state: "success", message: "Work entry added." });
   };
 
-  const handleDeleteWorkEntry = (entryId) => {
-    setWorkState((prev) => ({ entries: (prev.entries || []).filter((entry) => entry.id !== entryId) }));
+  const handleDeleteWorkEntry = async (entryId) => {
+    const nextState = { entries: (workState.entries || []).filter((entry) => entry.id !== entryId) };
+    if (apiBaseUrl && !isWorkLoaded) {
+      setWorkSyncStatus({ state: "error", message: "Work workspace is still loading. Try again in a moment." });
+      return;
+    }
+    if (apiBaseUrl) {
+      setWorkSyncStatus({ state: "loading", message: "Deleting work entry..." });
+      try {
+        const result = await persistWorkStateToApi(nextState, { skipNextLocalPersist: true });
+        if (!result.ok) {
+          setWorkSyncStatus({ state: "error", message: result.message });
+          return;
+        }
+      } catch (_error) {
+        setWorkSyncStatus({ state: "error", message: "Network error while deleting work entry." });
+        return;
+      }
+    }
+    setWorkState(nextState);
     setWorkSyncStatus({ state: "success", message: "Work entry deleted." });
   };
 
@@ -1748,9 +1849,13 @@ export default function App() {
       setCostSyncStatus({ state: "error", message: "Select at least one participant." });
       return;
     }
+    if (costForm.type === "transfer" && costForm.from_person === costForm.to_person) {
+      setCostSyncStatus({ state: "error", message: "Choose two different sides for the transfer." });
+      return;
+    }
 
     const now = new Date().toISOString();
-    const entry = {
+    const entry = normalizeCostEntryForAccounting({
       id: crypto.randomUUID(),
       date: costForm.date,
       type: costForm.type,
@@ -1761,14 +1866,23 @@ export default function App() {
       participants: costForm.type === "transfer" ? [] : costForm.participants,
       from_person: costForm.type === "transfer" ? costForm.from_person : "",
       to_person: costForm.type === "transfer" ? costForm.to_person : "",
+      bucket: costForm.type === "transfer" ? "settlement" : costForm.bucket,
+      funding_account: costForm.type === "transfer" ? "personal" : costForm.funding_account,
+      allocation_basis: costForm.type === "transfer" ? "none" : costForm.allocation_basis,
+      source_type: "manual",
       historical_only: Boolean(costForm.historical_only),
       notes: costForm.notes.trim(),
       created_at: now,
       updated_at: now,
-    };
+    });
 
-    setCostState((prev) => ({ entries: [entry, ...(prev.entries || [])] }));
-    if (apiBaseUrl && isCostHydratedFromServer) {
+    let savedEntry = entry;
+    if (apiBaseUrl && !isCostHydratedFromServer) {
+      setCostSyncStatus({ state: "error", message: "Cost workspace is still loading. Try again in a moment." });
+      return;
+    }
+    if (apiBaseUrl) {
+      setCostSyncStatus({ state: "loading", message: "Saving cost entry..." });
       try {
         const response = await fetch(`${apiBaseUrl}/costs`, {
           method: "POST",
@@ -1777,33 +1891,42 @@ export default function App() {
         });
         const payload = await response.json();
         if (!response.ok) {
-          setCostSyncStatus({ state: "error", message: payload.error || "Could not save cost entry to backend." });
+          setCostSyncStatus({ state: "error", message: messageFromApiPayload(payload, "Could not save cost entry to backend.") });
           return;
         }
+        savedEntry = normalizeCostEntryForAccounting(payload);
       } catch (_error) {
         setCostSyncStatus({ state: "error", message: "Network error while saving cost entry to backend." });
         return;
       }
     }
+    setCostState((prev) => ({ entries: [savedEntry, ...(prev.entries || [])] }));
     setCostForm((prev) => ({
       ...initialCostForm,
       date: formatDateISO(new Date()),
       paid_by: prev.paid_by,
       participants: prev.participants,
+      bucket: prev.bucket,
+      funding_account: prev.funding_account,
+      allocation_basis: prev.allocation_basis,
     }));
     setCostSyncStatus({ state: "success", message: "Cost entry saved." });
   };
 
   const handleDeleteCostEntry = async (id) => {
-    setCostState((prev) => ({ entries: (prev.entries || []).filter((entry) => entry.id !== id) }));
-    if (apiBaseUrl && isCostHydratedFromServer) {
+    if (apiBaseUrl && !isCostHydratedFromServer) {
+      setCostSyncStatus({ state: "error", message: "Cost workspace is still loading. Try again in a moment." });
+      return;
+    }
+    if (apiBaseUrl) {
+      setCostSyncStatus({ state: "loading", message: "Deleting cost entry..." });
       try {
         const response = await fetch(`${apiBaseUrl}/costs/${encodeURIComponent(id)}`, {
           method: "DELETE",
         });
         const payload = await response.json();
         if (!response.ok) {
-          setCostSyncStatus({ state: "error", message: payload.error || "Could not delete cost entry in backend." });
+          setCostSyncStatus({ state: "error", message: messageFromApiPayload(payload, "Could not delete cost entry in backend.") });
           return;
         }
       } catch (_error) {
@@ -1811,6 +1934,7 @@ export default function App() {
         return;
       }
     }
+    setCostState((prev) => ({ entries: (prev.entries || []).filter((entry) => entry.id !== id) }));
     setCostSyncStatus({ state: "success", message: "Cost entry deleted." });
   };
 
@@ -1834,7 +1958,7 @@ export default function App() {
           return null;
         }
         const now = new Date().toISOString();
-        return {
+        return normalizeCostEntryForAccounting({
           id: crypto.randomUUID(),
           date: formatDateISO(new Date(Date.now() - index * 86400000)),
           type: amount < 0 ? "income" : "expense",
@@ -1845,11 +1969,15 @@ export default function App() {
           participants: [...workPeople],
           from_person: "",
           to_person: "",
+          bucket: amount < 0 ? "income" : "historical_investment",
+          funding_account: "personal",
+          allocation_basis: amount < 0 ? "none" : "equal",
+          source_type: "raw_paste",
           historical_only: true,
           notes: "Imported from raw historical paste",
           created_at: now,
           updated_at: now,
-        };
+        });
       })
       .filter(Boolean);
 
@@ -1858,8 +1986,14 @@ export default function App() {
       return;
     }
 
-    setCostState((prev) => ({ entries: [...importedEntries, ...(prev.entries || [])] }));
-    if (apiBaseUrl && isCostHydratedFromServer) {
+    let savedEntries = importedEntries;
+    if (apiBaseUrl && !isCostHydratedFromServer) {
+      setCostSyncStatus({ state: "error", message: "Cost workspace is still loading. Try again in a moment." });
+      return;
+    }
+    if (apiBaseUrl) {
+      setCostSyncStatus({ state: "loading", message: `Importing ${importedEntries.length} entries...` });
+      savedEntries = [];
       try {
         for (const entry of importedEntries) {
           const response = await fetch(`${apiBaseUrl}/costs`, {
@@ -1869,16 +2003,28 @@ export default function App() {
           });
           const payload = await response.json();
           if (!response.ok) {
-            setCostSyncStatus({ state: "error", message: payload.error || "Could not import all entries to backend." });
+            if (savedEntries.length > 0) {
+              setCostState((prev) => ({ entries: [...savedEntries, ...(prev.entries || [])] }));
+            }
+            const prefix = savedEntries.length > 0 ? `${savedEntries.length} entries were saved before the import stopped. ` : "";
+            setCostSyncStatus({
+              state: "error",
+              message: `${prefix}${messageFromApiPayload(payload, "Could not import all entries to backend.")}`,
+            });
             return;
           }
+          savedEntries.push(normalizeCostEntryForAccounting(payload));
         }
       } catch (_error) {
+        if (savedEntries.length > 0) {
+          setCostState((prev) => ({ entries: [...savedEntries, ...(prev.entries || [])] }));
+        }
         setCostSyncStatus({ state: "error", message: "Network error while importing entries to backend." });
         return;
       }
     }
-    setCostSyncStatus({ state: "success", message: `Imported ${importedEntries.length} historical entries with categories.` });
+    setCostState((prev) => ({ entries: [...savedEntries, ...(prev.entries || [])] }));
+    setCostSyncStatus({ state: "success", message: `Imported ${savedEntries.length} historical entries with categories.` });
   };
 
   const submitQuickIntake = async (event) => {
@@ -1915,7 +2061,7 @@ export default function App() {
         });
         const payload = await response.json();
         if (!response.ok) {
-          setQuickIntakeStatus({ state: "error", message: payload.error || "Could not save gas entry." });
+          setQuickIntakeStatus({ state: "error", message: messageFromApiPayload(payload, "Could not save gas entry.") });
           return;
         }
       } catch (_error) {
@@ -1963,7 +2109,7 @@ export default function App() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        setQuickIntakeStatus({ state: "error", message: payload.error || "Could not save KM entry." });
+        setQuickIntakeStatus({ state: "error", message: messageFromApiPayload(payload, "Could not save KM entry.") });
         return;
       }
       upsertProfile(normalizedPerson);
@@ -2619,14 +2765,48 @@ export default function App() {
                     ))}
                   </select>
                 </label>
+                {costForm.type !== "transfer" && (
+                  <div className="inline-grid">
+                    <label className="field">
+                      <span>Accounting bucket</span>
+                      <select name="bucket" value={costForm.bucket} onChange={handleCostFormChange}>
+                        {accountingBucketOptions.map((bucket) => (
+                          <option key={bucket.id} value={bucket.id}>
+                            {bucket.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>Paid from</span>
+                      <select name="funding_account" value={costForm.funding_account} onChange={handleCostFormChange}>
+                        {fundingAccountOptions.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>Allocation</span>
+                      <select name="allocation_basis" value={costForm.allocation_basis} onChange={handleCostFormChange}>
+                        {allocationBasisOptions.map((basis) => (
+                          <option key={basis.id} value={basis.id}>
+                            {basis.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
                 {costForm.type === "transfer" ? (
                   <div className="inline-grid">
                     <label className="field">
                       <span>From</span>
                       <select name="from_person" value={costForm.from_person} onChange={handleCostFormChange}>
-                        {workPeople.map((person) => (
-                          <option key={person} value={person}>
-                            {person}
+                        {transferParties.map((party) => (
+                          <option key={party.id} value={party.id}>
+                            {party.label}
                           </option>
                         ))}
                       </select>
@@ -2634,9 +2814,9 @@ export default function App() {
                     <label className="field">
                       <span>To</span>
                       <select name="to_person" value={costForm.to_person} onChange={handleCostFormChange}>
-                        {workPeople.map((person) => (
-                          <option key={person} value={person}>
-                            {person}
+                        {transferParties.map((party) => (
+                          <option key={party.id} value={party.id}>
+                            {party.label}
                           </option>
                         ))}
                       </select>
@@ -2684,7 +2864,7 @@ export default function App() {
                     checked={Boolean(costForm.historical_only)}
                     onChange={handleCostFormChange}
                   />
-                  <span>Historical reference only (exclude from settlement decisions for now)</span>
+                  <span>Historical/audit only (exclude from live settlement decisions)</span>
                 </label>
                 <div className="form-actions">
                   <button className="submit" type="submit">
@@ -2806,6 +2986,7 @@ export default function App() {
                       <th>Type</th>
                       <th>Description</th>
                       <th>Category</th>
+                      <th>Accounting</th>
                       <th>Amount</th>
                       <th>Details</th>
                       <th>Flags</th>
@@ -2815,7 +2996,7 @@ export default function App() {
                   <tbody>
                     {filteredCostEntries.length === 0 ? (
                       <tr>
-                        <td colSpan="8" className="empty-cell">
+                        <td colSpan="9" className="empty-cell">
                           No cost entries yet.
                         </td>
                       </tr>
@@ -2826,13 +3007,21 @@ export default function App() {
                           <td>{entry.type}</td>
                           <td>{entry.description}</td>
                           <td>{categoryLabelMap[entry.category] || entry.category}</td>
+                          <td>
+                            {(accountingBucketLabelMap[entry.bucket] || entry.bucket) ?? "—"}
+                            <br />
+                            <small>
+                              {fundingAccountLabelMap[entry.funding_account] || entry.funding_account} ·{" "}
+                              {allocationBasisLabelMap[entry.allocation_basis] || entry.allocation_basis}
+                            </small>
+                          </td>
                           <td>{Number(entry.amount_chf).toFixed(2)}</td>
                           <td>
                             {entry.type === "transfer"
-                              ? `${entry.from_person} → ${entry.to_person}`
+                              ? `${formatTransferParty(entry.from_person)} → ${formatTransferParty(entry.to_person)}`
                               : `${entry.paid_by} · ${(entry.participants || []).join(", ")}`}
                           </td>
-                          <td>{entry.historical_only ? "Historical" : "Live"}</td>
+                          <td>{entry.historical_only || entry.historical ? "Historical" : "Live"}</td>
                           <td>
                             <button type="button" className="table-btn danger" onClick={() => handleDeleteCostEntry(entry.id)}>
                               Delete
@@ -3183,7 +3372,15 @@ export default function App() {
           </section>
         )}
 
-        {activeView === "accounting" && <VanAccountingSandbox />}
+        {activeView === "accounting" && (
+          <AccountingDashboard
+            apiBaseUrl={apiBaseUrl}
+            costEntries={costState.entries}
+            trips={trips}
+            workEntries={workState.entries}
+            people={workPeople}
+          />
+        )}
       </main>
     </div>
   );

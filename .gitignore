@@ -9,5 +9,11 @@ backend/dist/
 infra/.terraform/
 infra/.terraform.lock.hcl
 
+# Private exports and operational artifacts
+backups/
+private/
+*.local.csv
+*.local.json
+
 # OS
 .DS_Store

@@ -21,7 +21,11 @@ echo "Downloading backup snapshot from ${api_base_url}/backup/export ..."
 curl --fail --silent --show-error "${api_base_url}/backup/export" -o "$json_file"
 
 gzip -9 "$json_file"
-sha256sum "$gz_file" > "$sha_file"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "$gz_file" > "$sha_file"
+else
+  shasum -a 256 "$gz_file" > "$sha_file"
+fi
 
 echo "Backup written:"
 echo "  - $gz_file"

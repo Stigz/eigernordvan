@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -160,20 +162,30 @@ type workStatePayload struct {
 }
 
 type costEntryPayload struct {
-	ID             string   `json:"id"`
-	Date           string   `json:"date"`
-	Type           string   `json:"type"`
-	AmountCHF      float64  `json:"amount_chf"`
-	Description    string   `json:"description"`
-	Category       string   `json:"category"`
-	PaidBy         string   `json:"paid_by,omitempty"`
-	Participants   []string `json:"participants,omitempty"`
-	FromPerson     string   `json:"from_person,omitempty"`
-	ToPerson       string   `json:"to_person,omitempty"`
-	HistoricalOnly bool     `json:"historical_only"`
-	Notes          string   `json:"notes,omitempty"`
-	CreatedAt      string   `json:"created_at,omitempty"`
-	UpdatedAt      string   `json:"updated_at,omitempty"`
+	ID                 string   `json:"id"`
+	Date               string   `json:"date"`
+	Type               string   `json:"type"`
+	AmountCHF          float64  `json:"amount_chf"`
+	Description        string   `json:"description"`
+	Category           string   `json:"category"`
+	PaidBy             string   `json:"paid_by,omitempty"`
+	Participants       []string `json:"participants,omitempty"`
+	FromPerson         string   `json:"from_person,omitempty"`
+	ToPerson           string   `json:"to_person,omitempty"`
+	HistoricalOnly     bool     `json:"historical_only"`
+	SchemaVersion      string   `json:"schema_version,omitempty"`
+	Period             string   `json:"period,omitempty"`
+	Bucket             string   `json:"bucket,omitempty"`
+	FundingAccount     string   `json:"funding_account,omitempty"`
+	AllocationBasis    string   `json:"allocation_basis,omitempty"`
+	SourceType         string   `json:"source_type,omitempty"`
+	SourceID           string   `json:"source_id,omitempty"`
+	Historical         bool     `json:"historical"`
+	ImportBatchID      string   `json:"import_batch_id,omitempty"`
+	AffectsLiveBalance bool     `json:"affects_live_balance"`
+	Notes              string   `json:"notes,omitempty"`
+	CreatedAt          string   `json:"created_at,omitempty"`
+	UpdatedAt          string   `json:"updated_at,omitempty"`
 }
 
 type costStatePayload struct {
@@ -186,14 +198,18 @@ type backupTableExport struct {
 }
 
 type backupExportPayload struct {
-	SchemaVersion string                       `json:"schema_version"`
-	GeneratedAt   string                       `json:"generated_at"`
-	Tables        map[string]backupTableExport `json:"tables"`
-	Trips         []tripRecord                 `json:"trips"`
-	Fuel          []fuelRecord                 `json:"fuel"`
-	Bookings      []bookingRecord              `json:"bookings"`
-	Work          workStatePayload             `json:"work"`
-	Costs         costStatePayload             `json:"costs"`
+	SchemaVersion           string                         `json:"schema_version"`
+	GeneratedAt             string                         `json:"generated_at"`
+	Tables                  map[string]backupTableExport   `json:"tables"`
+	Trips                   []tripRecord                   `json:"trips"`
+	Fuel                    []fuelRecord                   `json:"fuel"`
+	Bookings                []bookingRecord                `json:"bookings"`
+	Work                    workStatePayload               `json:"work"`
+	Costs                   costStatePayload               `json:"costs"`
+	AccountingEntries       []costEntryPayload             `json:"accounting_entries"`
+	AccountingSettings      accountingSettingsPayload      `json:"accounting_settings"`
+	AccountingMonthlyCloses []monthlyClosePayload          `json:"accounting_monthly_closes"`
+	HistoricalImportBatches []historicalImportBatchPayload `json:"historical_import_batches"`
 }
 
 type handler struct {
@@ -298,6 +314,12 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/costs" {
 			return h.handleCreateCost(ctx, request)
 		}
+		if path == "/accounting/import/historical" {
+			return h.handleImportHistoricalAccounting(ctx, request)
+		}
+		if path == "/accounting/monthly-closes" {
+			return h.handleCreateMonthlyClose(ctx, request)
+		}
 	case http.MethodGet:
 		if path == "/trips" {
 			return h.handleListTrips(ctx)
@@ -320,6 +342,15 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		if path == "/costs" {
 			return h.handleGetCosts(ctx)
 		}
+		if path == "/accounting/settings" {
+			return h.handleGetAccountingSettings(ctx)
+		}
+		if path == "/accounting/preview" {
+			return h.handleGetAccountingPreview(ctx, request)
+		}
+		if path == "/accounting/monthly-closes" {
+			return h.handleListMonthlyCloses(ctx)
+		}
 		if path == "/backup/export" {
 			return h.handleExportBackup(ctx)
 		}
@@ -341,6 +372,9 @@ func (h *handler) handle(ctx context.Context, request events.APIGatewayV2HTTPReq
 		}
 		if path == "/costs" {
 			return h.handlePutCosts(ctx, request)
+		}
+		if path == "/accounting/settings" {
+			return h.handlePutAccountingSettings(ctx, request)
 		}
 		if strings.HasPrefix(path, "/costs/") {
 			return h.handleUpdateCost(ctx, request, strings.TrimPrefix(path, "/costs/"))
@@ -433,6 +467,13 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 		log.Printf("fetch open trip failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
 	}
+	if err := h.ensureTripRecordsOpen(ctx, tripRecord{Timestamp: now.Format(time.RFC3339)}); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("create trip closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
+	}
 
 	if payload.StartKM != nil && payload.EndKM == nil {
 		if openTrip != nil {
@@ -476,6 +517,13 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 		startKM = openTrip.StartKM
 		if strings.TrimSpace(userName) == "" {
 			userName = openTrip.UserName
+		}
+		if err := h.ensureTripRecordsOpen(ctx, *openTrip); err != nil {
+			if errors.Is(err, errAccountingPeriodClosed) {
+				return h.respondError(http.StatusConflict, err.Error()), nil
+			}
+			log.Printf("close trip closed-period check failed: %v", err)
+			return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
 		}
 		if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 			TableName: &h.tableName,
@@ -689,11 +737,22 @@ func (h *handler) handleUpdateTrip(ctx context.Context, request events.APIGatewa
 		log.Printf("scan failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
 	}
+	existing, ok := findTripByID(trips, id)
+	if !ok {
+		return h.respondError(http.StatusNotFound, "trip not found"), nil
+	}
 	if err := validateTripUpdate(*payload.StartKM, *payload.EndKM, trips, id); err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
 	now := time.Now().UTC()
+	if err := h.ensureTripRecordsOpen(ctx, existing, tripRecord{Timestamp: now.Format(time.RFC3339)}); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("update trip closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
+	}
 	deltaKM := *payload.EndKM - *payload.StartKM
 	tripCost := deltaKM * 0.50
 
@@ -727,14 +786,39 @@ func (h *handler) handleUpdateTrip(ctx context.Context, request events.APIGatewa
 }
 
 func (h *handler) handleDeleteTrip(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
-	_, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+	trimmedID := strings.TrimSpace(id)
+	if trimmedID == "" {
+		return h.respondError(http.StatusBadRequest, "trip id is required"), nil
+	}
+	trips, err := h.listTrips(ctx)
+	if err != nil {
+		log.Printf("scan trips before delete failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to delete trip"), nil
+	}
+	existing, ok := findTripByID(trips, trimmedID)
+	if !ok {
+		return h.respondError(http.StatusNotFound, "trip not found"), nil
+	}
+	if err := h.ensureTripRecordsOpen(ctx, existing); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("delete trip closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate trip"), nil
+	}
+	_, err = h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: &h.tableName,
 		Key: map[string]types.AttributeValue{
-			"id": &types.AttributeValueMemberS{Value: id},
+			"id": &types.AttributeValueMemberS{Value: trimmedID},
 		},
+		ConditionExpression: awsString("attribute_exists(id)"),
 	})
 	if err != nil {
 		log.Printf("delete item failed: %v", err)
+		var conditionalErr *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalErr) {
+			return h.respondError(http.StatusNotFound, "trip not found"), nil
+		}
 		return h.respondError(http.StatusInternalServerError, "failed to delete trip"), nil
 	}
 
@@ -817,6 +901,13 @@ func (h *handler) handleCreateBooking(ctx context.Context, request events.APIGat
 	normalized, err := normalizeAndValidateBooking(payload)
 	if err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
+	if err := h.ensureBookingRecordsOpen(ctx, normalized); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("create booking closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate booking"), nil
 	}
 
 	bookings, err := h.listBookings(ctx)
@@ -928,6 +1019,13 @@ func (h *handler) handleUpdateBooking(ctx context.Context, request events.APIGat
 	if err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
+	if err := h.ensureBookingRecordsOpen(ctx, existing, normalized); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("update booking closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate booking"), nil
+	}
 
 	bookings, err := h.listBookings(ctx)
 	if err != nil {
@@ -957,17 +1055,38 @@ func (h *handler) handleUpdateBooking(ctx context.Context, request events.APIGat
 }
 
 func (h *handler) handleDeleteBooking(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
-	if strings.TrimSpace(id) == "" {
+	trimmedID := strings.TrimSpace(id)
+	if trimmedID == "" {
 		return h.respondError(http.StatusBadRequest, "booking id is required"), nil
 	}
-	_, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+	existing, err := h.getBookingByID(ctx, trimmedID)
+	if err != nil {
+		if errors.Is(err, errBookingNotFound) {
+			return h.respondError(http.StatusNotFound, "booking not found"), nil
+		}
+		log.Printf("get booking before delete failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to delete booking"), nil
+	}
+	if err := h.ensureBookingRecordsOpen(ctx, existing); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("delete booking closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate booking"), nil
+	}
+	_, err = h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: &h.bookingTableName,
 		Key: map[string]types.AttributeValue{
-			"id": &types.AttributeValueMemberS{Value: id},
+			"id": &types.AttributeValueMemberS{Value: trimmedID},
 		},
+		ConditionExpression: awsString("attribute_exists(id)"),
 	})
 	if err != nil {
 		log.Printf("delete booking failed: %v", err)
+		var conditionalErr *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalErr) {
+			return h.respondError(http.StatusNotFound, "booking not found"), nil
+		}
 		return h.respondError(http.StatusInternalServerError, "failed to delete booking"), nil
 	}
 	return h.respond(http.StatusOK, map[string]string{"status": "deleted"}), nil
@@ -1017,6 +1136,19 @@ func (h *handler) handlePutWork(ctx context.Context, request events.APIGatewayV2
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
+	var state workStatePayload
+	if err := json.Unmarshal(normalized, &state); err != nil {
+		log.Printf("normalized work payload unmarshal failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to read normalized work state"), nil
+	}
+	if err := h.ensureBulkWorkReplacementOpen(ctx, state.Entries); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("work bulk closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate work state"), nil
+	}
+
 	item := map[string]types.AttributeValue{
 		"id":         &types.AttributeValueMemberS{Value: "work-state"},
 		"payload":    &types.AttributeValueMemberS{Value: string(normalized)},
@@ -1031,11 +1163,6 @@ func (h *handler) handlePutWork(ctx context.Context, request events.APIGatewayV2
 		return h.respondError(http.StatusInternalServerError, "failed to store work state"), nil
 	}
 
-	var state workStatePayload
-	if err := json.Unmarshal(normalized, &state); err != nil {
-		log.Printf("normalized work payload unmarshal failed: %v", err)
-		return h.respondError(http.StatusInternalServerError, "failed to read normalized work state"), nil
-	}
 	return h.respond(http.StatusOK, state), nil
 }
 
@@ -1074,6 +1201,21 @@ func (h *handler) handleExportBackup(ctx context.Context) (events.APIGatewayV2HT
 		log.Printf("backup export list costs failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
 	}
+	accountingSettings, err := h.getAccountingSettings(ctx)
+	if err != nil {
+		log.Printf("backup export get accounting settings failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
+	monthlyCloses, err := h.listMonthlyCloses(ctx)
+	if err != nil {
+		log.Printf("backup export list monthly closes failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
+	importBatches, err := h.listHistoricalImportBatches(ctx)
+	if err != nil {
+		log.Printf("backup export list historical import batches failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to export backup"), nil
+	}
 
 	sort.Slice(bookings, func(i, j int) bool {
 		if bookings[i].StartDate == bookings[j].StartDate {
@@ -1089,15 +1231,33 @@ func (h *handler) handleExportBackup(ctx context.Context) (events.APIGatewayV2HT
 	}
 
 	return h.respond(http.StatusOK, backupExportPayload{
-		SchemaVersion: "2026-04-23",
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-		Tables:        tables,
-		Trips:         trips,
-		Fuel:          fuel,
-		Bookings:      bookings,
-		Work:          workState,
-		Costs:         costStatePayload{Entries: costEntries},
+		SchemaVersion:           "2026-06-05",
+		GeneratedAt:             time.Now().UTC().Format(time.RFC3339),
+		Tables:                  tables,
+		Trips:                   trips,
+		Fuel:                    fuel,
+		Bookings:                bookings,
+		Work:                    workState,
+		Costs:                   costStatePayload{Entries: costEntries},
+		AccountingEntries:       sortedAccountingEntries(costEntries),
+		AccountingSettings:      accountingSettings,
+		AccountingMonthlyCloses: monthlyCloses,
+		HistoricalImportBatches: importBatches,
 	}), nil
+}
+
+func sortedAccountingEntries(entries []costEntryPayload) []costEntryPayload {
+	sorted := append([]costEntryPayload(nil), entries...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Period != sorted[j].Period {
+			return sorted[i].Period < sorted[j].Period
+		}
+		if sorted[i].Date != sorted[j].Date {
+			return sorted[i].Date < sorted[j].Date
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	return sorted
 }
 
 func (h *handler) exportAllTables(ctx context.Context) (map[string]backupTableExport, error) {
@@ -1224,6 +1384,14 @@ func (h *handler) handlePutCosts(ctx context.Context, request events.APIGatewayV
 		return h.respondError(http.StatusInternalServerError, "failed to read normalized cost state"), nil
 	}
 
+	if err := h.ensureBulkCostReplacementOpen(ctx, state.Entries); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("cost bulk closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate cost state"), nil
+	}
+
 	if err := h.replaceCostEntries(ctx, state.Entries); err != nil {
 		log.Printf("replace cost entries failed: %v", err)
 		return h.respondError(http.StatusInternalServerError, "failed to store cost state"), nil
@@ -1255,6 +1423,13 @@ func (h *handler) handleCreateCost(ctx context.Context, request events.APIGatewa
 	if err != nil {
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
+	if err := h.ensureCostEntriesOpen(ctx, entry); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("create cost closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate cost entry"), nil
+	}
 	if err := h.putCostEntry(ctx, entry, false); err != nil {
 		log.Printf("create cost entry failed: %v", err)
 		var conditionalErr *types.ConditionalCheckFailedException
@@ -1277,6 +1452,21 @@ func (h *handler) handleUpdateCost(ctx context.Context, request events.APIGatewa
 	if entry.ID != strings.TrimSpace(id) {
 		return h.respondError(http.StatusBadRequest, "cost id in path must match payload id"), nil
 	}
+	existing, err := h.getCostEntryByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, errCostEntryNotFound) {
+			return h.respondError(http.StatusNotFound, "cost entry not found"), nil
+		}
+		log.Printf("get cost entry before update failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to update cost entry"), nil
+	}
+	if err := h.ensureCostEntriesOpen(ctx, existing, entry); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("update cost closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate cost entry"), nil
+	}
 	if err := h.putCostEntry(ctx, entry, true); err != nil {
 		log.Printf("update cost entry failed: %v", err)
 		var conditionalErr *types.ConditionalCheckFailedException
@@ -1292,6 +1482,21 @@ func (h *handler) handleDeleteCost(ctx context.Context, id string) (events.APIGa
 	trimmedID := strings.TrimSpace(id)
 	if trimmedID == "" {
 		return h.respondError(http.StatusBadRequest, "cost id is required"), nil
+	}
+	existing, err := h.getCostEntryByID(ctx, trimmedID)
+	if err != nil {
+		if errors.Is(err, errCostEntryNotFound) {
+			return h.respondError(http.StatusNotFound, "cost entry not found"), nil
+		}
+		log.Printf("get cost entry before delete failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to delete cost entry"), nil
+	}
+	if err := h.ensureCostEntriesOpen(ctx, existing); err != nil {
+		if errors.Is(err, errAccountingPeriodClosed) {
+			return h.respondError(http.StatusConflict, err.Error()), nil
+		}
+		log.Printf("delete cost closed-period check failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to validate cost entry"), nil
 	}
 	if _, err := h.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: &h.costTableName,
@@ -1419,6 +1624,7 @@ func parseEventRecord(item map[string]types.AttributeValue) (eventRecord, error)
 }
 
 var errBookingNotFound = errors.New("booking not found")
+var errCostEntryNotFound = errors.New("cost entry not found")
 
 func parseBookingRecord(item map[string]types.AttributeValue) (bookingRecord, error) {
 	getStringRequired := func(key string) (string, error) {
@@ -1833,6 +2039,14 @@ func normalizeAndValidateCostPayload(raw []byte) ([]byte, error) {
 		entry.PaidBy = strings.TrimSpace(entry.PaidBy)
 		entry.FromPerson = strings.TrimSpace(entry.FromPerson)
 		entry.ToPerson = strings.TrimSpace(entry.ToPerson)
+		entry.SchemaVersion = strings.TrimSpace(entry.SchemaVersion)
+		entry.Period = strings.TrimSpace(entry.Period)
+		entry.Bucket = strings.TrimSpace(entry.Bucket)
+		entry.FundingAccount = strings.TrimSpace(entry.FundingAccount)
+		entry.AllocationBasis = strings.TrimSpace(entry.AllocationBasis)
+		entry.SourceType = strings.TrimSpace(entry.SourceType)
+		entry.SourceID = strings.TrimSpace(entry.SourceID)
+		entry.ImportBatchID = strings.TrimSpace(entry.ImportBatchID)
 		entry.Notes = strings.TrimSpace(entry.Notes)
 		if entry.ID == "" || entry.Date == "" || entry.Description == "" || entry.Category == "" {
 			return nil, errors.New("each entry requires id, date, description, and category")
@@ -1870,6 +2084,10 @@ func normalizeAndValidateCostPayload(raw []byte) ([]byte, error) {
 			entry.PaidBy = ""
 		default:
 			return nil, fmt.Errorf("type must be expense, income, or transfer for entry %s", entry.ID)
+		}
+		normalizeCostAccountingFields(&entry)
+		if err := validateCostAccountingFields(entry); err != nil {
+			return nil, err
 		}
 		if entry.CreatedAt == "" {
 			entry.CreatedAt = now
@@ -1927,7 +2145,165 @@ func parseCostEntryItem(item map[string]types.AttributeValue) (costEntryPayload,
 	if strings.TrimSpace(entry.ID) == "" {
 		entry.ID = strings.TrimPrefix(keyAttr.Value, "cost-entry#")
 	}
+	normalizeCostAccountingFields(&entry)
 	return entry, true
+}
+
+func (h *handler) getCostEntryByID(ctx context.Context, id string) (costEntryPayload, error) {
+	result, err := h.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &h.costTableName,
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: costEntryKey(id)},
+		},
+	})
+	if err != nil {
+		return costEntryPayload{}, err
+	}
+	if len(result.Item) == 0 {
+		return costEntryPayload{}, errCostEntryNotFound
+	}
+	entry, ok := parseCostEntryItem(result.Item)
+	if !ok {
+		return costEntryPayload{}, errors.New("stored cost entry is invalid")
+	}
+	return entry, nil
+}
+
+func (h *handler) ensureCostEntriesOpen(ctx context.Context, entries ...costEntryPayload) error {
+	closes, err := h.listMonthlyCloses(ctx)
+	if err != nil {
+		return err
+	}
+	closedPeriods := closedAccountingPeriods(closes)
+	for _, entry := range entries {
+		if period, closed := closedPeriodForCostEntry(entry, closedPeriods); closed {
+			return fmt.Errorf("%w: %s", errAccountingPeriodClosed, period)
+		}
+	}
+	return nil
+}
+
+func (h *handler) ensureTripRecordsOpen(ctx context.Context, trips ...tripRecord) error {
+	closes, err := h.listMonthlyCloses(ctx)
+	if err != nil {
+		return err
+	}
+	closedPeriods := closedAccountingPeriods(closes)
+	for _, trip := range trips {
+		if period, closed := closedPeriodForTrip(trip, closedPeriods); closed {
+			return fmt.Errorf("%w: %s", errAccountingPeriodClosed, period)
+		}
+	}
+	return nil
+}
+
+func (h *handler) ensureBookingRecordsOpen(ctx context.Context, bookings ...bookingRecord) error {
+	closes, err := h.listMonthlyCloses(ctx)
+	if err != nil {
+		return err
+	}
+	closedPeriods := closedAccountingPeriods(closes)
+	for _, booking := range bookings {
+		if period, closed := closedPeriodForBooking(booking, closedPeriods); closed {
+			return fmt.Errorf("%w: %s", errAccountingPeriodClosed, period)
+		}
+	}
+	return nil
+}
+
+func (h *handler) ensureBulkWorkReplacementOpen(ctx context.Context, entries []workEntryPayload) error {
+	closes, err := h.listMonthlyCloses(ctx)
+	if err != nil {
+		return err
+	}
+	closedPeriods := closedAccountingPeriods(closes)
+	if len(closedPeriods) == 0 {
+		return nil
+	}
+
+	existingState, err := h.getWorkState(ctx)
+	if err != nil {
+		return err
+	}
+	existingByID := make(map[string]workEntryPayload, len(existingState.Entries))
+	for _, entry := range existingState.Entries {
+		existingByID[entry.ID] = entry
+	}
+	nextIDs := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		nextIDs[entry.ID] = struct{}{}
+		if period, closed := closedPeriodForWorkEntry(entry, closedPeriods); closed {
+			existing, exists := existingByID[entry.ID]
+			if !exists || !sameClosedWorkEntry(existing, entry) {
+				return fmt.Errorf("%w: %s", errAccountingPeriodClosed, period)
+			}
+		}
+	}
+	for _, entry := range existingState.Entries {
+		if _, kept := nextIDs[entry.ID]; kept {
+			continue
+		}
+		if period, closed := closedPeriodForWorkEntry(entry, closedPeriods); closed {
+			return fmt.Errorf("%w: %s", errAccountingPeriodClosed, period)
+		}
+	}
+	return nil
+}
+
+func (h *handler) ensureBulkCostReplacementOpen(ctx context.Context, entries []costEntryPayload) error {
+	closes, err := h.listMonthlyCloses(ctx)
+	if err != nil {
+		return err
+	}
+	closedPeriods := closedAccountingPeriods(closes)
+	if len(closedPeriods) == 0 {
+		return nil
+	}
+	existing, err := h.listCostEntries(ctx)
+	if err != nil {
+		return err
+	}
+	existingByID := make(map[string]costEntryPayload, len(existing))
+	for _, entry := range existing {
+		existingByID[entry.ID] = entry
+	}
+	nextIDs := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		nextIDs[entry.ID] = struct{}{}
+		if period, closed := closedPeriodForCostEntry(entry, closedPeriods); closed {
+			existingEntry, exists := existingByID[entry.ID]
+			if !exists || !sameClosedCostEntry(existingEntry, entry) {
+				return fmt.Errorf("%w: %s", errAccountingPeriodClosed, period)
+			}
+		}
+	}
+	for _, entry := range existing {
+		if _, kept := nextIDs[entry.ID]; kept {
+			continue
+		}
+		if period, closed := closedPeriodForCostEntry(entry, closedPeriods); closed {
+			return fmt.Errorf("%w: %s", errAccountingPeriodClosed, period)
+		}
+	}
+	return nil
+}
+
+func sameClosedCostEntry(left, right costEntryPayload) bool {
+	normalizeCostAccountingFields(&left)
+	normalizeCostAccountingFields(&right)
+	left.CreatedAt = ""
+	left.UpdatedAt = ""
+	right.CreatedAt = ""
+	right.UpdatedAt = ""
+	return reflect.DeepEqual(left, right)
+}
+
+func sameClosedWorkEntry(left, right workEntryPayload) bool {
+	left.CreatedAt = ""
+	left.UpdatedAt = ""
+	right.CreatedAt = ""
+	right.UpdatedAt = ""
+	return reflect.DeepEqual(left, right)
 }
 
 func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, error) {
@@ -2060,7 +2436,7 @@ func (h *handler) replaceCostEntries(ctx context.Context, entries []costEntryPay
 }
 
 func roundMoney(value float64) float64 {
-	return float64(int(value*100+0.5)) / 100
+	return math.Round(value*100) / 100
 }
 
 func awsString(value string) *string {
@@ -2177,6 +2553,16 @@ func validateTripUpdate(startKM float64, endKM float64, trips []tripRecord, curr
 	}
 
 	return nil
+}
+
+func findTripByID(trips []tripRecord, id string) (tripRecord, bool) {
+	trimmedID := strings.TrimSpace(id)
+	for _, trip := range trips {
+		if trip.ID == trimmedID {
+			return trip, true
+		}
+	}
+	return tripRecord{}, false
 }
 
 func buildIntakeContext(events []eventRecord, openTrip *tripRecord) (map[string]personContext, *float64) {
