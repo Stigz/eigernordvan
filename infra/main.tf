@@ -155,7 +155,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "dynamodb:GetItem",
           "dynamodb:Query"
         ]
-        Effect   = "Allow"
+        Effect = "Allow"
         Resource = [
           aws_dynamodb_table.trip_ledger.arn,
           aws_dynamodb_table.bookings.arn,
@@ -336,6 +336,42 @@ resource "aws_apigatewayv2_route" "costs_update_route" {
 resource "aws_apigatewayv2_route" "costs_delete_route" {
   api_id    = aws_apigatewayv2_api.trip_api.id
   route_key = "DELETE /costs/{id}"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "accounting_settings_get_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /accounting/settings"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "accounting_settings_put_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "PUT /accounting/settings"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "accounting_preview_get_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /accounting/preview"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "accounting_historical_import_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "POST /accounting/import/historical"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "accounting_monthly_closes_get_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "GET /accounting/monthly-closes"
+  target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "accounting_monthly_closes_post_route" {
+  api_id    = aws_apigatewayv2_api.trip_api.id
+  route_key = "POST /accounting/monthly-closes"
   target    = "integrations/${aws_apigatewayv2_integration.trip_integration.id}"
 }
 

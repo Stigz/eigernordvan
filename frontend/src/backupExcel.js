@@ -79,11 +79,24 @@ const rowsToWorksheetXml = (rows) => {
 const getBackupSheets = (payload) => {
   const tables = payload?.tables && typeof payload.tables === "object" ? payload.tables : {};
   const tableEntries = Object.entries(tables);
+  const accountingEntries = Array.isArray(payload?.accounting_entries)
+    ? payload.accounting_entries
+    : payload?.costs?.entries;
+  const accountingSheets = [
+    { name: "accounting_entries", rows: buildExcelRows(accountingEntries) },
+    { name: "accounting_settings", rows: buildExcelRows([payload?.accounting_settings || {}]) },
+    { name: "accounting_monthly_closes", rows: buildExcelRows(payload?.accounting_monthly_closes) },
+    { name: "historical_import_batches", rows: buildExcelRows(payload?.historical_import_batches) },
+  ];
 
   if (tableEntries.length > 0) {
-    return tableEntries
+    const rawTableSheets = tableEntries
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([label, tableExport]) => ({ name: label, rows: buildExcelRows(tableExport?.items) }));
+    return [
+      ...rawTableSheets,
+      ...accountingSheets,
+    ];
   }
 
   return [
@@ -92,6 +105,7 @@ const getBackupSheets = (payload) => {
     { name: "bookings", rows: buildExcelRows(payload?.bookings) },
     { name: "work", rows: buildExcelRows([payload?.work || {}]) },
     { name: "costs", rows: buildExcelRows(payload?.costs?.entries) },
+    ...accountingSheets,
   ];
 };
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { messageFromApiPayload } from "../apiMessages";
 import {
   addDays,
   buildBookingCalendarCells,
@@ -204,7 +205,7 @@ export default function BookingPanel({ apiBaseUrl, canViewBookingDetails = false
       const response = await fetch(`${apiBaseUrl}/bookings/${encodeURIComponent(booking.id)}`, { method: "DELETE" });
       const payload = await response.json();
       if (!response.ok) {
-        setBookingStatus({ state: "error", message: payload.error || "Could not delete booking." });
+        setBookingStatus({ state: "error", message: messageFromApiPayload(payload, "Could not delete booking.") });
         return;
       }
       if (bookingEditId === booking.id) {
@@ -270,7 +271,10 @@ export default function BookingPanel({ apiBaseUrl, canViewBookingDetails = false
       const payload = await response.json();
 
       if (!response.ok) {
-        setBookingStatus({ state: "error", message: payload.error || `Could not ${isEditingBooking ? "update" : "create"} booking.` });
+        setBookingStatus({
+          state: "error",
+          message: messageFromApiPayload(payload, `Could not ${isEditingBooking ? "update" : "create"} booking.`),
+        });
         return;
       }
 

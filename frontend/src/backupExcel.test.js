@@ -54,4 +54,26 @@ describe("buildBackupExcelFile", () => {
     expect(xml).toContain('Worksheet ss:Name="name with invalid characters"');
     expect(xml).toContain('Worksheet ss:Name="name with invalid characters 2"');
   });
+
+  it("exports accounting recovery sheets", async () => {
+    const { blob } = buildBackupExcelFile({
+      generated_at: "2026-05-13T12:00:00Z",
+      tables: {
+        costs: { table_name: "costs-prod", items: [{ id: "cost-1" }] },
+      },
+      accounting_entries: [{ id: "entry-1", bucket: "shared_running", funding_account: "shared_pot" }],
+      accounting_settings: { km_rate_chf: 0.5, night_rate_chf: 50 },
+      accounting_monthly_closes: [{ period: "2026-06" }],
+      historical_import_batches: [{ id: "historical-sheet" }],
+    });
+
+    const xml = await blob.text();
+
+    expect(xml).toContain('Worksheet ss:Name="accounting_entries"');
+    expect(xml).toContain("shared_running");
+    expect(xml).toContain("shared_pot");
+    expect(xml).toContain('Worksheet ss:Name="accounting_settings"');
+    expect(xml).toContain('Worksheet ss:Name="accounting_monthly_closes"');
+    expect(xml).toContain('Worksheet ss:Name="historical_import_batches"');
+  });
 });
