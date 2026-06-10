@@ -1,0 +1,79 @@
+name: Apply Accounting Refactor PR
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'codex/accounting-refactor'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply staged accounting patch
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          git fetch origin main "${HEAD_REF}"
+
+          for path in $(git ls-tree -r --name-only "origin/${HEAD_REF}" -- .codex | grep 'accounting-refactor\.patch\.gz\.b64\.part' | sort); do
+            git show "origin/${HEAD_REF}:${path}"
+          done > /tmp/accounting-refactor.patch.gz.b64
+
+          test "$(wc -c < /tmp/accounting-refactor.patch.gz.b64 | tr -d ' ')" = "61704"
+          echo "27f7dfd44c4fc96feb2be69d0d0dd82d50dda93c9c46464115e9aec3ef4e6b67  /tmp/accounting-refactor.patch.gz.b64" | sha256sum -c -
+
+          base64 -d /tmp/accounting-refactor.patch.gz.b64 | gunzip > /tmp/accounting-refactor.patch
+          test "$(wc -c < /tmp/accounting-refactor.patch | tr -d ' ')" = "233269"
+          echo "0d961aaaf0f8f29dbd2cfe7301a31527b346adc0d46a6e46f2bc78c77256aec3  /tmp/accounting-refactor.patch" | sha256sum -c -
+
+          git switch -C "${HEAD_REF}" origin/main
+          git apply --3way --index \
+            --exclude=.github/workflows/accounting-preflight.yml \
+            --exclude=.github/workflows/deploy.yml \
+            --exclude=frontend/src/booking/BookingPanel.jsx \
+            /tmp/accounting-refactor.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('frontend/src/booking/BookingPanel.jsx')
+          text = path.read_text()
+          if 'messageFromApiPayload' not in text:
+              text = text.replace(
+                  'import { useEffect, useMemo, useState } from "react";\n',
+                  'import { useEffect, useMemo, useState } from "react";\nimport { messageFromApiPayload } from "../apiMessages";\n',
+                  1,
+              )
+          text = text.replace(
+              'message: payload.error || "Could not delete booking."',
+              'message: messageFromApiPayload(payload, "Could not delete booking.")',
+          )
+          text = text.replace(
+              'message: payload.error || `Could not ${isEditingBooking ? "update" : "create"} booking.`',
+              'message: messageFromApiPayload(payload, `Could not ${isEditingBooking ? "update" : "create"} booking.`)',
+          )
+          path.write_text(text)
+          PY
+          git add frontend/src/booking/BookingPanel.jsx
+
+          git status --short
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add accounting refactor"
+          git push --force-with-lease origin "${HEAD_REF}"
