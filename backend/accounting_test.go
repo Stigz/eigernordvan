@@ -438,6 +438,12 @@ func TestBuildHistoricalImportDryRunReconcilesExpectedTotals(t *testing.T) {
 	if entries[0].ID != "historical-sheet:B0001" || !entries[0].Historical || entries[0].AffectsLiveBalance {
 		t.Fatalf("unexpected imported entry metadata: %+v", entries[0])
 	}
+	if entries[0].SourceRef != "Quelle_Kosten!B3" ||
+		entries[0].DebitAccount != "1400" ||
+		entries[0].CreditAccount != "2001" ||
+		entries[0].SourceAmountCHF != 8900 {
+		t.Fatalf("expected historical audit fields to be preserved, got %+v", entries[0])
+	}
 }
 
 func TestBuildHistoricalImportDetectsDuplicateExistingIDs(t *testing.T) {
