@@ -180,6 +180,12 @@ type costEntryPayload struct {
 	AllocationBasis    string   `json:"allocation_basis,omitempty"`
 	SourceType         string   `json:"source_type,omitempty"`
 	SourceID           string   `json:"source_id,omitempty"`
+	SourceRef          string   `json:"source_ref,omitempty"`
+	DebitAccount       string   `json:"debit_account,omitempty"`
+	DebitName          string   `json:"debit_name,omitempty"`
+	CreditAccount      string   `json:"credit_account,omitempty"`
+	CreditName         string   `json:"credit_name,omitempty"`
+	SourceAmountCHF    float64  `json:"source_amount_chf,omitempty"`
 	Historical         bool     `json:"historical"`
 	ImportBatchID      string   `json:"import_batch_id,omitempty"`
 	AffectsLiveBalance bool     `json:"affects_live_balance"`
