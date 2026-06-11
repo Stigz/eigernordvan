@@ -142,7 +142,7 @@ describe("calculateAccountingProjection", () => {
   it("splits policy surplus from the same base amount", () => {
     const projection = calculateAccountingProjection({
       settings,
-      people: ["Nic", "Kayla", "Jeanne", "Lüku"],
+      people: ["Nic", "Luki", "Kayla", "Jeanne"],
       period: "2026-06",
       trips: [
         { user_name: "Nic", timestamp: "2026-06-10T12:00:00Z", delta_km: 164 },

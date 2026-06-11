@@ -1,4 +1,4 @@
-export const accountingPeople = ["Nic", "Kayla", "Jeanne", "Lüku"];
+export const accountingPeople = ["Nic", "Luki", "Kayla", "Jeanne"];
 
 export const accountingBucketOptions = [
   { id: "van_investment", label: "Van investment" },

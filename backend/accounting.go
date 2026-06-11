@@ -47,7 +47,7 @@ var allocationBases = map[string]struct{}{
 	"none":           {},
 }
 
-var defaultAccountingPeople = []string{"Nic", "Kayla", "Jeanne", "Lüku"}
+var defaultAccountingPeople = []string{"Nic", "Luki", "Kayla", "Jeanne"}
 
 type accountingSettingsPayload struct {
 	SchemaVersion                     string  `json:"schema_version"`
@@ -1273,7 +1273,7 @@ func historicalRowToCostEntry(batchID string, row historicalJournalEntryPayload)
 		Description:        strings.TrimSpace(row.Description),
 		Category:           strings.TrimSpace(row.Category),
 		PaidBy:             strings.TrimSpace(row.Person),
-		Participants:       []string{"Nic", "Kayla", "Jeanne", "Lüku"},
+		Participants:       []string{"Nic", "Luki", "Kayla", "Jeanne"},
 		HistoricalOnly:     true,
 		SchemaVersion:      accountingSchemaVersion,
 		Bucket:             bucket,

@@ -13,7 +13,7 @@ import {
   normalizeCostEntryForAccounting,
 } from "./accounting";
 import BookingPanel from "./booking/BookingPanel";
-import { buildKmModeOptions, collectRecentPeople } from "./quickIntakeFlow";
+import { buildKmModeOptions, namePresets } from "./quickIntakeFlow";
 
 const apiUrl = import.meta.env.VITE_API_URL;
 
@@ -57,7 +57,7 @@ const initialGasForm = {
   note: "",
 };
 
-const corePeople = ["Nic", "Kayla", "Jeanne", "Lüku"];
+const corePeople = ["Nic", "Luki", "Kayla", "Jeanne"];
 const sharedPotParticipant = { id: "shared_pot", label: "Shared pot" };
 const transferParties = [...corePeople.map((person) => ({ id: person, label: person })), sharedPotParticipant];
 const formatTransferParty = (value) => transferParties.find((party) => party.id === value)?.label || value;
@@ -185,29 +185,6 @@ const monthLabel = (date) =>
     month: "long",
     year: "numeric",
   });
-
-const profileStorageKey = "van_trip_profiles_v1";
-
-const parseProfiles = () => {
-  if (typeof window === "undefined") {
-    return [];
-  }
-
-  try {
-    const raw = localStorage.getItem(profileStorageKey);
-    const parsed = JSON.parse(raw || "[]");
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim());
-  } catch (_error) {
-    return [];
-  }
-};
-
-const saveProfiles = (profiles) => {
-  localStorage.setItem(profileStorageKey, JSON.stringify(profiles));
-};
 
 const fuelStorageKey = "van_fuel_entries_v1";
 const workStorageKey = "van_work_planner_v1";
@@ -779,7 +756,6 @@ export default function App() {
   const [form, setForm] = useState(initialForm);
   const [status, setStatus] = useState({ state: "idle", message: "" });
   const [trips, setTrips] = useState([]);
-  const [profiles, setProfiles] = useState(() => parseProfiles());
   const [editId, setEditId] = useState("");
   const [tableState, setTableState] = useState({ state: "loading", message: "Loading entries..." });
   const [openTrip, setOpenTrip] = useState(null);
@@ -812,10 +788,7 @@ export default function App() {
     () => (trips.length === 0 ? null : Math.max(...trips.map((trip) => trip.end_km))),
     [trips],
   );
-  const quickIntakePeople = useMemo(
-    () => collectRecentPeople({ profiles, intakePeople: intakeContext.people, trips, gasEntries }),
-    [profiles, intakeContext.people, trips, gasEntries],
-  );
+  const quickIntakePeople = namePresets;
   const kmModeOptions = useMemo(() => buildKmModeOptions(Boolean(openTrip)), [openTrip]);
 
   const tableTrips = useMemo(
@@ -1327,21 +1300,6 @@ export default function App() {
   }, [latestEndKm, editId, openTrip]);
 
   useEffect(() => {
-    const fromTrips = [...new Set(trips.map((trip) => trip.user_name).filter(Boolean))];
-    if (fromTrips.length === 0) {
-      return;
-    }
-    setProfiles((prev) => {
-      const merged = [...new Set([...prev, ...fromTrips])].sort((a, b) => a.localeCompare(b));
-      if (merged.length === prev.length) {
-        return prev;
-      }
-      saveProfiles(merged);
-      return merged;
-    });
-  }, [trips]);
-
-  useEffect(() => {
     if (openTrip) {
       setQuickIntakeKmMode("end");
       setQuickIntakeForm((prev) => ({ ...prev, start_km: String(openTrip.start_km.toFixed(1)) }));
@@ -1552,21 +1510,6 @@ export default function App() {
     setCostFilters((prev) => ({ ...prev, [name]: value }));
   };
 
-  const upsertProfile = (name) => {
-    const normalized = name.trim();
-    if (!normalized) {
-      return;
-    }
-    setProfiles((prev) => {
-      if (prev.includes(normalized)) {
-        return prev;
-      }
-      const next = [...prev, normalized].sort((a, b) => a.localeCompare(b));
-      saveProfiles(next);
-      return next;
-    });
-  };
-
   const handleSubmit = async (event) => {
     event.preventDefault();
     setStatus({ state: "loading", message: "Logging trip..." });
@@ -1604,7 +1547,6 @@ export default function App() {
         return;
       }
 
-      upsertProfile(form.user_name);
       const isOpenTrip = payload.is_open || payload.event_type === "trip_manual_open";
       const message = isOpenTrip
         ? "Trip start saved. Add an end odometer later to close it."
@@ -1666,7 +1608,6 @@ export default function App() {
         setGasStatus({ state: "error", message: payload.error || "Could not save fuel entry." });
         return;
       }
-      upsertProfile(entry.user_name);
       setGasStatus({
         state: "success",
         message: entry.missed
@@ -2068,7 +2009,6 @@ export default function App() {
         setQuickIntakeStatus({ state: "error", message: "Network error while saving gas entry." });
         return;
       }
-      upsertProfile(normalizedPerson);
       setQuickIntakeStatus({ state: "success", message: "Saved gas entry. Opening main page..." });
       await loadFuelEntries();
       await loadIntakeContext();
@@ -2112,7 +2052,6 @@ export default function App() {
         setQuickIntakeStatus({ state: "error", message: messageFromApiPayload(payload, "Could not save KM entry.") });
         return;
       }
-      upsertProfile(normalizedPerson);
       setQuickIntakeStatus({
         state: "success",
         message: payload.is_open ? "Trip start saved. Opening main page..." : "Trip saved. Opening main page...",
@@ -2128,6 +2067,11 @@ export default function App() {
 
   return (
     <div className="page">
+      <datalist id="name-presets">
+        {namePresets.map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
       {showQuickIntake && (
         <section className="quick-intake-shell">
           <div className="quick-intake-card">
@@ -2162,6 +2106,7 @@ export default function App() {
                     <span>Or type a new person</span>
                     <input
                       type="text"
+                      list="name-presets"
                       value={quickIntakePerson}
                       onChange={(event) => setQuickIntakePerson(event.target.value)}
                       placeholder="Type name"
@@ -2385,17 +2330,12 @@ export default function App() {
                   <input
                     type="text"
                     name="user_name"
-                    list="saved-profiles"
+                    list="name-presets"
                     placeholder="e.g. Alex"
                     value={form.user_name}
                     onChange={handleChange}
                     required
                   />
-                  <datalist id="saved-profiles">
-                    {profiles.map((profile) => (
-                      <option key={profile} value={profile} />
-                    ))}
-                  </datalist>
                 </label>
 
                 <label className="field">
@@ -2553,7 +2493,7 @@ export default function App() {
                   <input
                     type="text"
                     name="user_name"
-                    list="saved-profiles"
+                    list="name-presets"
                     placeholder="e.g. Alex"
                     value={gasForm.user_name}
                     onChange={handleGasChange}
