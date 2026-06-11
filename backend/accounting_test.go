@@ -13,6 +13,7 @@ type accountingProjectionFixture struct {
 	Settings    accountingSettingsPayload `json:"settings"`
 	Trips       []tripRecord              `json:"trips"`
 	Bookings    []bookingRecord           `json:"bookings"`
+	FuelEntries []fuelRecord              `json:"fuel_entries"`
 	WorkEntries []workEntryPayload        `json:"work_entries"`
 	CostEntries []costEntryPayload        `json:"cost_entries"`
 	Expected    struct {
@@ -137,6 +138,15 @@ func TestBuildAccountingProjectionUsesStoredInputs(t *testing.T) {
 			Month:  "2026-06",
 			Days:   0.5,
 		}},
+		FuelEntries: []fuelRecord{{
+			ID:          "fuel-1",
+			Timestamp:   "2026-06-11T12:00:00Z",
+			UserName:    "Kayla",
+			OdometerKM:  1200,
+			Liters:      30,
+			FuelCostCHF: 40,
+			EventType:   "fuel_manual",
+		}},
 		CostEntries: []costEntryPayload{
 			{
 				ID:             "insurance-1",
@@ -182,21 +192,23 @@ func TestBuildAccountingProjectionUsesStoredInputs(t *testing.T) {
 		projection.UsageByPerson["Nic"] != 60 ||
 		projection.UsageByPerson["Kayla"] != 100 ||
 		projection.WorkCreditsByPerson["Nic"] != 50 ||
-		projection.SharedPot.CurrentCostsCHF != 120 {
+		projection.SharedPot.CurrentCostsCHF != 160 ||
+		projection.SharedPot.FuelCostsCHF != 40 {
 		t.Fatalf("unexpected projection totals: %+v", projection)
 	}
-	if projection.SharedPot.ReserveAllocationCHF != 63 ||
-		projection.SharedPot.HistoricalRepaymentCHF != 8.1 ||
-		projection.SharedPot.BalanceCHF != 18.9 {
+	if projection.SharedPot.ReserveAllocationCHF != 35 ||
+		projection.SharedPot.HistoricalRepaymentCHF != 15 ||
+		projection.SharedPot.BalanceCHF != 0 {
 		t.Fatalf("unexpected shared pot policy result: %+v", projection.SharedPot)
 	}
-	if projection.PersonBalances["Nic"] != 60 || projection.PersonBalances["Kayla"] != -100 {
+	if projection.PersonBalances["Nic"] != 60 || projection.PersonBalances["Kayla"] != -60 {
 		t.Fatalf("unexpected person balances: %+v", projection.PersonBalances)
 	}
 	if projection.SourceCounts.CostEntries != 2 ||
 		projection.SourceCounts.HistoricalCostEntries != 1 ||
 		projection.SourceCounts.TripEntries != 1 ||
 		projection.SourceCounts.BookingEntries != 1 ||
+		projection.SourceCounts.FuelEntries != 1 ||
 		projection.SourceCounts.WorkEntries != 1 {
 		t.Fatalf("unexpected source counts: %+v", projection.SourceCounts)
 	}
@@ -206,7 +218,7 @@ func TestBuildAccountingProjectionUsesStoredInputs(t *testing.T) {
 	if len(projection.SuggestedSettlements) != 2 ||
 		projection.SuggestedSettlements[0].FromPerson != "Kayla" ||
 		projection.SuggestedSettlements[0].ToPerson != "shared_pot" ||
-		projection.SuggestedSettlements[0].AmountCHF != 100 ||
+		projection.SuggestedSettlements[0].AmountCHF != 60 ||
 		projection.SuggestedSettlements[1].FromPerson != "shared_pot" ||
 		projection.SuggestedSettlements[1].ToPerson != "Nic" ||
 		projection.SuggestedSettlements[1].AmountCHF != 60 {
@@ -220,6 +232,7 @@ func TestBuildAccountingProjectionMatchesSharedFixture(t *testing.T) {
 		CostEntries: fixture.CostEntries,
 		Trips:       fixture.Trips,
 		Bookings:    fixture.Bookings,
+		FuelEntries: fixture.FuelEntries,
 		WorkEntries: fixture.WorkEntries,
 		Settings:    fixture.Settings,
 		People:      fixture.People,
@@ -604,6 +617,7 @@ func assertSourceCounts(t *testing.T, actual accountingSourceCounts, expected ma
 		"historical_cost_entries": actual.HistoricalCostEntries,
 		"trip_entries":            actual.TripEntries,
 		"booking_entries":         actual.BookingEntries,
+		"fuel_entries":            actual.FuelEntries,
 		"work_entries":            actual.WorkEntries,
 	}
 	for key, want := range expected {
@@ -622,6 +636,7 @@ func projectionSharedPotMap(sharedPot accountingSharedPotProjection) map[string]
 		"usage_charges_chf":        sharedPot.UsageChargesCHF,
 		"external_income_chf":      sharedPot.ExternalIncomeCHF,
 		"current_costs_chf":        sharedPot.CurrentCostsCHF,
+		"fuel_costs_chf":           sharedPot.FuelCostsCHF,
 		"reserve_allocation_chf":   sharedPot.ReserveAllocationCHF,
 		"historical_repayment_chf": sharedPot.HistoricalRepaymentCHF,
 		"balance_chf":              sharedPot.BalanceCHF,
