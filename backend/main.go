@@ -2317,8 +2317,11 @@ func (h *handler) listCostEntries(ctx context.Context) ([]costEntryPayload, erro
 	if err != nil {
 		return nil, err
 	}
-	if len(entries) > 0 || strings.TrimSpace(legacyPayload) != "" {
-		return h.migrateLegacyCostState(ctx, entries, legacyPayload)
+	if len(entries) > 0 {
+		return entries, nil
+	}
+	if strings.TrimSpace(legacyPayload) != "" {
+		return h.migrateLegacyCostState(ctx, nil, legacyPayload)
 	}
 
 	legacyEntries, legacyWorkPayload, err := h.listCostEntriesFromTable(ctx, h.workTableName)

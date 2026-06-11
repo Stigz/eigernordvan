@@ -35,6 +35,9 @@ export const defaultAccountingSettings = {
   surplus_historical_repayment_percent: 30,
 };
 
+export const accountingCurrentOpenPeriod = "current_open";
+export const accountingCurrentOpenStartDate = "2026-04-01";
+
 export const accountingBucketLabelMap = Object.fromEntries(accountingBucketOptions.map((option) => [option.id, option.label]));
 export const fundingAccountLabelMap = Object.fromEntries(fundingAccountOptions.map((option) => [option.id, option.label]));
 export const allocationBasisLabelMap = Object.fromEntries(allocationBasisOptions.map((option) => [option.id, option.label]));
@@ -53,6 +56,21 @@ const sharedPotProjectionKeys = [
   "reserve_allocation_chf",
   "historical_repayment_chf",
   "balance_chf",
+];
+const currentPotProjectionKeys = [
+  "usage_funding_chf",
+  "costs_chf",
+  "balance_chf",
+  "deficit_chf",
+  "surplus_chf",
+  "km_funding_chf",
+  "night_funding_chf",
+  "fuel_costs_chf",
+  "running_costs_chf",
+  "living_costs_chf",
+  "work_credits_chf",
+  "work_offset_chf",
+  "work_carryforward_chf",
 ];
 const sourceCountKeys = ["cost_entries", "historical_cost_entries", "trip_entries", "booking_entries", "fuel_entries", "work_entries"];
 const monthlyCloseTotalKeys = [
@@ -163,6 +181,8 @@ const normalizeMoneyMap = (values = {}, keys = []) => {
 const normalizeCountMap = (values = {}) =>
   Object.fromEntries(sourceCountKeys.map((key) => [key, Math.max(0, Math.trunc(numberOr(values?.[key])))]));
 
+const normalizeCurrentPot = (values = {}) => normalizeMoneyMap(values, currentPotProjectionKeys);
+
 export const normalizeAccountingProjectionFromApi = (payload = {}, { people = accountingPeople } = {}) => {
   if (!payload || typeof payload !== "object" || !payload.period || !payload.shared_pot) {
     return null;
@@ -188,9 +208,16 @@ export const normalizeAccountingProjectionFromApi = (payload = {}, { people = ac
     monthlyContributionsCHF: roundMoney(numberOr(payload.monthly_contributions_chf)),
     sharedPot,
     usageByPerson: normalizeMoneyMap(payload.usage_by_person, people),
+    netUsageByPerson: normalizeMoneyMap(payload.net_usage_by_person, people),
     workCreditsByPerson: normalizeMoneyMap(payload.work_credits_by_person, people),
+    workOffsetsByPerson: normalizeMoneyMap(payload.work_offsets_by_person, people),
+    workCarryForwardByPerson: normalizeMoneyMap(payload.work_carryforward_by_person, people),
     kmByPerson: normalizeMoneyMap(payload.km_by_person, people),
     nightsByPerson: normalizeMoneyMap(payload.nights_by_person, people),
+    currentPots: {
+      vehicle: normalizeCurrentPot(payload.current_pots?.vehicle),
+      livingWork: normalizeCurrentPot(payload.current_pots?.living_work),
+    },
     bucketTotals: normalizeMoneyMap(
       payload.bucket_totals,
       accountingBucketOptions.map((option) => option.id),
@@ -267,7 +294,101 @@ const splitAmount = (amount, participants) => {
   return valid.map((person) => [person, share]);
 };
 
-const dateInPeriod = (value, period) => !period || periodFromDate(value) === period;
+const datePart = (value) => String(value || "").slice(0, 10);
+const dateInPeriod = (value, period) => {
+  if (!period) return true;
+  if (period === accountingCurrentOpenPeriod) {
+    const date = datePart(value);
+    return date >= accountingCurrentOpenStartDate;
+  }
+  return periodFromDate(value) === period;
+};
+
+const monthInPeriod = (month, period) => {
+  if (!period) return true;
+  const normalized = String(month || "").slice(0, 7);
+  if (!normalized) return false;
+  if (period === accountingCurrentOpenPeriod) {
+    return normalized >= accountingCurrentOpenStartDate.slice(0, 7);
+  }
+  return normalized === period;
+};
+
+const emptyCurrentPot = () => ({
+  usage_funding_chf: 0,
+  costs_chf: 0,
+  balance_chf: 0,
+  deficit_chf: 0,
+  surplus_chf: 0,
+  km_funding_chf: 0,
+  night_funding_chf: 0,
+  fuel_costs_chf: 0,
+  running_costs_chf: 0,
+  living_costs_chf: 0,
+  work_credits_chf: 0,
+  work_offset_chf: 0,
+  work_carryforward_chf: 0,
+});
+
+const finishCurrentPot = (pot) => {
+  pot.usage_funding_chf = roundMoney(pot.usage_funding_chf);
+  pot.costs_chf = roundMoney(pot.costs_chf);
+  pot.balance_chf = roundMoney(pot.usage_funding_chf - pot.costs_chf);
+  pot.deficit_chf = roundMoney(Math.max(0, -pot.balance_chf));
+  pot.surplus_chf = roundMoney(Math.max(0, pot.balance_chf));
+  currentPotProjectionKeys.forEach((key) => {
+    pot[key] = roundMoney(pot[key]);
+  });
+  return pot;
+};
+
+const livingCostCategories = new Set(["hardware_material", "interior_build", "equipment"]);
+const vehicleCostCategories = new Set(["vehicle_purchase", "repairs_service", "registration_fees", "insurance", "taxes", "fuel_energy"]);
+const livingCostKeywords = [
+  "bett",
+  "sofa",
+  "couch",
+  "stoff",
+  "propan",
+  "gasflasche",
+  "lattenrost",
+  "futon",
+  "scharnier",
+  "kugelschnäpper",
+  "koch",
+  "kitchen",
+  "matratze",
+  "polster",
+  "vorhang",
+];
+const vehicleCostKeywords = [
+  "auspuff",
+  "vignette",
+  "pneu",
+  "reifen",
+  "service",
+  "werkstatt",
+  "repar",
+  "versicherung",
+  "steuer",
+  "strassenverkehr",
+  "bremse",
+  "motor",
+  "diesel",
+  "benzin",
+  "tcs",
+];
+
+const currentCostPot = (entry = {}) => {
+  const category = String(entry.category || "").trim();
+  const description = `${entry.description || ""} ${entry.notes || ""}`.toLowerCase();
+  if (vehicleCostCategories.has(category)) return "vehicle";
+  if (livingCostCategories.has(category)) return "livingWork";
+  if (vehicleCostKeywords.some((keyword) => description.includes(keyword))) return "vehicle";
+  if (livingCostKeywords.some((keyword) => description.includes(keyword))) return "livingWork";
+  if (entry.bucket === "van_investment") return "livingWork";
+  return "vehicle";
+};
 
 const bookingNights = (booking) => {
   if (Number.isFinite(Number(booking.nights))) return Number(booking.nights);
@@ -344,17 +465,25 @@ export const calculateAccountingProjection = ({
   const balances = emptyPersonMap(people);
   const settlementBalances = { ...emptyPersonMap(people), [sharedPotAccount]: 0 };
   const usageByPerson = emptyPersonMap(people);
+  const netUsageByPerson = emptyPersonMap(people);
   const workCreditsByPerson = emptyPersonMap(people);
+  const workOffsetsByPerson = emptyPersonMap(people);
+  const workCarryForwardByPerson = emptyPersonMap(people);
   const kmByPerson = emptyPersonMap(people);
   const nightsByPerson = emptyPersonMap(people);
   const bucketTotals = emptyPersonMap(accountingBucketOptions.map((option) => option.id));
+  const nightLivingChargesByPerson = emptyPersonMap(people);
   const normalizedCosts = costEntries.map(normalizeCostEntryForAccounting);
   const liveCostEntries = normalizedCosts.filter((entry) => entry.affects_live_balance && dateInPeriod(entry.date, period));
   const historicalCostEntries = normalizedCosts.filter((entry) => entry.historical);
   const periodTrips = trips.filter((trip) => dateInPeriod(trip.timestamp, period));
   const periodBookings = bookings.filter((booking) => booking.status === "booked" && dateInPeriod(booking.start_date, period));
   const periodFuelEntries = fuelEntries.filter((entry) => !entry.missed && numberOr(entry.cost_chf ?? entry.fuel_cost_chf) > 0 && dateInPeriod(entry.timestamp, period));
-  const periodWorkEntries = workEntries.filter((entry) => entry.month === period);
+  const periodWorkEntries = workEntries.filter((entry) => monthInPeriod(entry.month, period));
+  const currentPots = {
+    vehicle: emptyCurrentPot(),
+    livingWork: emptyCurrentPot(),
+  };
 
   const projection = {
     period,
@@ -374,9 +503,13 @@ export const calculateAccountingProjection = ({
       balance_chf: 0,
     },
     usageByPerson,
+    netUsageByPerson,
     workCreditsByPerson,
+    workOffsetsByPerson,
+    workCarryForwardByPerson,
     kmByPerson,
     nightsByPerson,
+    currentPots,
     bucketTotals,
     personBalances: balances,
     settlementBalances,
@@ -412,6 +545,9 @@ export const calculateAccountingProjection = ({
     const cost = roundMoney(km * normalizedSettings.km_rate_chf);
     kmByPerson[person] = roundMoney(kmByPerson[person] + km);
     usageByPerson[person] = roundMoney(usageByPerson[person] + cost);
+    netUsageByPerson[person] = roundMoney(netUsageByPerson[person] + cost);
+    currentPots.vehicle.km_funding_chf = roundMoney(currentPots.vehicle.km_funding_chf + cost);
+    currentPots.vehicle.usage_funding_chf = roundMoney(currentPots.vehicle.usage_funding_chf + cost);
     bucketTotals.usage = roundMoney(bucketTotals.usage + cost);
     addBalance(balances, person, -cost);
     addBalance(settlementBalances, person, -cost);
@@ -425,8 +561,16 @@ export const calculateAccountingProjection = ({
     const nights = bookingNights(booking);
     if (person) {
       const cost = roundMoney(nights * normalizedSettings.night_rate_chf);
+      const vehicleShare = roundMoney(cost / 2);
+      const livingShare = roundMoney(cost - vehicleShare);
       nightsByPerson[person] = roundMoney(nightsByPerson[person] + nights);
       usageByPerson[person] = roundMoney(usageByPerson[person] + cost);
+      netUsageByPerson[person] = roundMoney(netUsageByPerson[person] + cost);
+      nightLivingChargesByPerson[person] = roundMoney(nightLivingChargesByPerson[person] + livingShare);
+      currentPots.vehicle.night_funding_chf = roundMoney(currentPots.vehicle.night_funding_chf + vehicleShare);
+      currentPots.vehicle.usage_funding_chf = roundMoney(currentPots.vehicle.usage_funding_chf + vehicleShare);
+      currentPots.livingWork.night_funding_chf = roundMoney(currentPots.livingWork.night_funding_chf + livingShare);
+      currentPots.livingWork.usage_funding_chf = roundMoney(currentPots.livingWork.usage_funding_chf + livingShare);
       bucketTotals.usage = roundMoney(bucketTotals.usage + cost);
       addBalance(balances, person, -cost);
       addBalance(settlementBalances, person, -cost);
@@ -445,6 +589,9 @@ export const calculateAccountingProjection = ({
     const amount = roundMoney(numberOr(entry.cost_chf ?? entry.fuel_cost_chf));
     if (amount <= 0) return;
     bucketTotals.shared_running = roundMoney(bucketTotals.shared_running + amount);
+    currentPots.vehicle.fuel_costs_chf = roundMoney(currentPots.vehicle.fuel_costs_chf + amount);
+    currentPots.vehicle.running_costs_chf = roundMoney(currentPots.vehicle.running_costs_chf + amount);
+    currentPots.vehicle.costs_chf = roundMoney(currentPots.vehicle.costs_chf + amount);
     projection.sharedPot.current_costs_chf = roundMoney(projection.sharedPot.current_costs_chf + amount);
     projection.sharedPot.fuel_costs_chf = roundMoney(projection.sharedPot.fuel_costs_chf + amount);
     projection.sharedPot.outflow_chf = roundMoney(projection.sharedPot.outflow_chf + amount);
@@ -460,10 +607,25 @@ export const calculateAccountingProjection = ({
     const credit = roundMoney(numberOr(entry.days) * normalizedSettings.workday_rate_chf);
     workCreditsByPerson[entry.person] = roundMoney(workCreditsByPerson[entry.person] + credit);
     bucketTotals.work_credit = roundMoney(bucketTotals.work_credit + credit);
-    addBalance(balances, entry.person, credit);
-    addBalance(settlementBalances, entry.person, credit);
-    addBalance(settlementBalances, sharedPotAccount, -credit);
-    projection.sharedPot.outflow_chf = roundMoney(projection.sharedPot.outflow_chf + credit);
+  });
+
+  people.forEach((person) => {
+    const offset = roundMoney(Math.min(workCreditsByPerson[person], nightLivingChargesByPerson[person]));
+    const carryForward = roundMoney(Math.max(0, workCreditsByPerson[person] - offset));
+    workOffsetsByPerson[person] = offset;
+    workCarryForwardByPerson[person] = carryForward;
+    if (offset > 0) {
+      addBalance(balances, person, offset);
+      addBalance(settlementBalances, person, offset);
+      addBalance(settlementBalances, sharedPotAccount, -offset);
+      netUsageByPerson[person] = roundMoney(netUsageByPerson[person] - offset);
+      projection.sharedPot.usage_charges_chf = roundMoney(projection.sharedPot.usage_charges_chf - offset);
+      projection.sharedPot.inflow_chf = roundMoney(projection.sharedPot.inflow_chf - offset);
+      currentPots.livingWork.costs_chf = roundMoney(currentPots.livingWork.costs_chf + offset);
+      currentPots.livingWork.work_offset_chf = roundMoney(currentPots.livingWork.work_offset_chf + offset);
+    }
+    currentPots.livingWork.work_credits_chf = roundMoney(currentPots.livingWork.work_credits_chf + workCreditsByPerson[person]);
+    currentPots.livingWork.work_carryforward_chf = roundMoney(currentPots.livingWork.work_carryforward_chf + carryForward);
   });
 
   liveCostEntries.forEach((entry) => {
@@ -493,7 +655,15 @@ export const calculateAccountingProjection = ({
       return;
     }
 
-    if (entry.bucket === "shared_running" || entry.bucket === "usage") {
+    if (entry.bucket === "shared_running" || entry.bucket === "usage" || entry.bucket === "van_investment") {
+      const pot = currentCostPot(entry);
+      if (pot === "livingWork") {
+        currentPots.livingWork.living_costs_chf = roundMoney(currentPots.livingWork.living_costs_chf + amount);
+        currentPots.livingWork.costs_chf = roundMoney(currentPots.livingWork.costs_chf + amount);
+      } else {
+        currentPots.vehicle.running_costs_chf = roundMoney(currentPots.vehicle.running_costs_chf + amount);
+        currentPots.vehicle.costs_chf = roundMoney(currentPots.vehicle.costs_chf + amount);
+      }
       projection.sharedPot.current_costs_chf = roundMoney(projection.sharedPot.current_costs_chf + amount);
       projection.sharedPot.outflow_chf = roundMoney(projection.sharedPot.outflow_chf + amount);
       if (entry.funding_account !== "shared_pot") {
@@ -517,17 +687,14 @@ export const calculateAccountingProjection = ({
   const surplusBeforePolicy = roundMoney(Math.max(0, projection.sharedPot.inflow_chf - projection.sharedPot.outflow_chf));
   const reserveNeed = Math.max(0, normalizedSettings.reserve_target_chf);
   const reserveAllocation = roundMoney(Math.min(reserveNeed, surplusBeforePolicy * (normalizedSettings.surplus_reserve_percent / 100)));
-  const historicalRepayment = roundMoney(
-    Math.min(
-      Math.max(0, surplusBeforePolicy - reserveAllocation),
-      surplusBeforePolicy * (normalizedSettings.surplus_historical_repayment_percent / 100),
-    ),
-  );
+  const historicalRepayment = 0;
 
   projection.sharedPot.reserve_allocation_chf = reserveAllocation;
   projection.sharedPot.historical_repayment_chf = historicalRepayment;
   projection.sharedPot.outflow_chf = roundMoney(projection.sharedPot.outflow_chf + reserveAllocation + historicalRepayment);
   projection.sharedPot.balance_chf = roundMoney(projection.sharedPot.inflow_chf - projection.sharedPot.outflow_chf);
+  projection.currentPots.vehicle = finishCurrentPot(currentPots.vehicle);
+  projection.currentPots.livingWork = finishCurrentPot(currentPots.livingWork);
   projection.personBalances = Object.fromEntries(Object.entries(balances).map(([person, amount]) => [person, roundMoney(amount)]));
   projection.settlementBalances = Object.fromEntries(Object.entries(settlementBalances).map(([person, amount]) => [person, roundMoney(amount)]));
   projection.suggestedSettlements = buildSuggestedSettlements(projection.settlementBalances);

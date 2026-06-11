@@ -20,6 +20,8 @@ import (
 
 const accountingSchemaVersion = "2026-06-05"
 const sharedPotAccount = "shared_pot"
+const accountingCurrentOpenPeriod = "current_open"
+const accountingCurrentOpenStartDate = "2026-04-01"
 
 var errAccountingPeriodClosed = errors.New("accounting period is closed")
 
@@ -82,6 +84,27 @@ type accountingSharedPotProjection struct {
 	BalanceCHF             float64 `json:"balance_chf"`
 }
 
+type accountingCurrentPotProjection struct {
+	UsageFundingCHF     float64 `json:"usage_funding_chf"`
+	CostsCHF            float64 `json:"costs_chf"`
+	BalanceCHF          float64 `json:"balance_chf"`
+	DeficitCHF          float64 `json:"deficit_chf"`
+	SurplusCHF          float64 `json:"surplus_chf"`
+	KMFundingCHF        float64 `json:"km_funding_chf"`
+	NightFundingCHF     float64 `json:"night_funding_chf"`
+	FuelCostsCHF        float64 `json:"fuel_costs_chf"`
+	RunningCostsCHF     float64 `json:"running_costs_chf"`
+	LivingCostsCHF      float64 `json:"living_costs_chf"`
+	WorkCreditsCHF      float64 `json:"work_credits_chf"`
+	WorkOffsetCHF       float64 `json:"work_offset_chf"`
+	WorkCarryForwardCHF float64 `json:"work_carryforward_chf"`
+}
+
+type accountingCurrentPotsProjection struct {
+	Vehicle    accountingCurrentPotProjection `json:"vehicle"`
+	LivingWork accountingCurrentPotProjection `json:"living_work"`
+}
+
 type accountingSourceCounts struct {
 	CostEntries           int `json:"cost_entries"`
 	HistoricalCostEntries int `json:"historical_cost_entries"`
@@ -97,20 +120,24 @@ type accountingHistoricalSummary struct {
 }
 
 type accountingProjectionPayload struct {
-	Period                  string                        `json:"period"`
-	Settings                accountingSettingsPayload     `json:"settings"`
-	MonthlyContributionsCHF float64                       `json:"monthly_contributions_chf"`
-	SharedPot               accountingSharedPotProjection `json:"shared_pot"`
-	UsageByPerson           map[string]float64            `json:"usage_by_person"`
-	WorkCreditsByPerson     map[string]float64            `json:"work_credits_by_person"`
-	KMByPerson              map[string]float64            `json:"km_by_person"`
-	NightsByPerson          map[string]float64            `json:"nights_by_person"`
-	BucketTotals            map[string]float64            `json:"bucket_totals"`
-	PersonBalances          map[string]float64            `json:"person_balances"`
-	SettlementBalances      map[string]float64            `json:"settlement_balances"`
-	SuggestedSettlements    []settlementSuggestionPayload `json:"suggested_settlements"`
-	SourceCounts            accountingSourceCounts        `json:"source_counts"`
-	Historical              accountingHistoricalSummary   `json:"historical"`
+	Period                   string                          `json:"period"`
+	Settings                 accountingSettingsPayload       `json:"settings"`
+	MonthlyContributionsCHF  float64                         `json:"monthly_contributions_chf"`
+	SharedPot                accountingSharedPotProjection   `json:"shared_pot"`
+	UsageByPerson            map[string]float64              `json:"usage_by_person"`
+	NetUsageByPerson         map[string]float64              `json:"net_usage_by_person"`
+	WorkCreditsByPerson      map[string]float64              `json:"work_credits_by_person"`
+	WorkOffsetsByPerson      map[string]float64              `json:"work_offsets_by_person"`
+	WorkCarryForwardByPerson map[string]float64              `json:"work_carryforward_by_person"`
+	KMByPerson               map[string]float64              `json:"km_by_person"`
+	NightsByPerson           map[string]float64              `json:"nights_by_person"`
+	CurrentPots              accountingCurrentPotsProjection `json:"current_pots"`
+	BucketTotals             map[string]float64              `json:"bucket_totals"`
+	PersonBalances           map[string]float64              `json:"person_balances"`
+	SettlementBalances       map[string]float64              `json:"settlement_balances"`
+	SuggestedSettlements     []settlementSuggestionPayload   `json:"suggested_settlements"`
+	SourceCounts             accountingSourceCounts          `json:"source_counts"`
+	Historical               accountingHistoricalSummary     `json:"historical"`
 }
 
 type accountingProjectionInput struct {
@@ -351,6 +378,10 @@ func isValidAccountingPeriod(period string) bool {
 	return yearErr == nil && monthErr == nil && year > 0 && month >= 1 && month <= 12
 }
 
+func isValidAccountingProjectionPeriod(period string) bool {
+	return period == accountingCurrentOpenPeriod || isValidAccountingPeriod(period)
+}
+
 func inferAccountingBucket(entry costEntryPayload) string {
 	if entry.Type == "transfer" {
 		return "settlement"
@@ -441,10 +472,10 @@ func (h *handler) getAccountingSettings(ctx context.Context) (accountingSettings
 func (h *handler) handleGetAccountingPreview(ctx context.Context, request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	period := strings.TrimSpace(request.QueryStringParameters["period"])
 	if period == "" {
-		period = time.Now().UTC().Format("2006-01")
+		period = accountingCurrentOpenPeriod
 	}
-	if !isValidAccountingPeriod(period) {
-		return h.respondError(http.StatusBadRequest, "period must use YYYY-MM"), nil
+	if !isValidAccountingProjectionPeriod(period) {
+		return h.respondError(http.StatusBadRequest, "period must use YYYY-MM or current_open"), nil
 	}
 
 	projection, err := h.buildLiveAccountingProjection(ctx, period)
@@ -727,10 +758,10 @@ func monthlyCloseFromProjection(projection accountingProjectionPayload, notes st
 func buildAccountingProjection(input accountingProjectionInput) (accountingProjectionPayload, error) {
 	period := strings.TrimSpace(input.Period)
 	if period == "" {
-		period = time.Now().UTC().Format("2006-01")
+		period = accountingCurrentOpenPeriod
 	}
-	if !isValidAccountingPeriod(period) {
-		return accountingProjectionPayload{}, errors.New("period must use YYYY-MM")
+	if !isValidAccountingProjectionPeriod(period) {
+		return accountingProjectionPayload{}, errors.New("period must use YYYY-MM or current_open")
 	}
 	settings, err := normalizeAccountingSettings(input.Settings)
 	if err != nil {
@@ -761,23 +792,32 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 	settlementBalances := emptyAccountingPersonMap(people)
 	settlementBalances[sharedPotAccount] = 0
 	usageByPerson := emptyAccountingPersonMap(people)
+	netUsageByPerson := emptyAccountingPersonMap(people)
 	workCreditsByPerson := emptyAccountingPersonMap(people)
+	workOffsetsByPerson := emptyAccountingPersonMap(people)
+	workCarryForwardByPerson := emptyAccountingPersonMap(people)
 	kmByPerson := emptyAccountingPersonMap(people)
 	nightsByPerson := emptyAccountingPersonMap(people)
+	nightLivingChargesByPerson := emptyAccountingPersonMap(people)
 	bucketTotals := emptyAccountingBucketMap()
+	currentPots := accountingCurrentPotsProjection{}
 	monthlyContributions := roundMoney(settings.MonthlyPaymentCHF * float64(len(people)))
 
 	projection := accountingProjectionPayload{
-		Period:                  period,
-		Settings:                settings,
-		MonthlyContributionsCHF: monthlyContributions,
-		UsageByPerson:           usageByPerson,
-		WorkCreditsByPerson:     workCreditsByPerson,
-		KMByPerson:              kmByPerson,
-		NightsByPerson:          nightsByPerson,
-		BucketTotals:            bucketTotals,
-		PersonBalances:          balances,
-		SettlementBalances:      settlementBalances,
+		Period:                   period,
+		Settings:                 settings,
+		MonthlyContributionsCHF:  monthlyContributions,
+		UsageByPerson:            usageByPerson,
+		NetUsageByPerson:         netUsageByPerson,
+		WorkCreditsByPerson:      workCreditsByPerson,
+		WorkOffsetsByPerson:      workOffsetsByPerson,
+		WorkCarryForwardByPerson: workCarryForwardByPerson,
+		KMByPerson:               kmByPerson,
+		NightsByPerson:           nightsByPerson,
+		CurrentPots:              currentPots,
+		BucketTotals:             bucketTotals,
+		PersonBalances:           balances,
+		SettlementBalances:       settlementBalances,
 		SourceCounts: accountingSourceCounts{
 			CostEntries:           len(liveCostEntries),
 			HistoricalCostEntries: len(historicalCostEntries),
@@ -807,6 +847,9 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 		cost := roundMoney(trip.DeltaKM * settings.KMRateCHF)
 		kmByPerson[trip.UserName] = roundMoney(kmByPerson[trip.UserName] + trip.DeltaKM)
 		usageByPerson[trip.UserName] = roundMoney(usageByPerson[trip.UserName] + cost)
+		netUsageByPerson[trip.UserName] = roundMoney(netUsageByPerson[trip.UserName] + cost)
+		projection.CurrentPots.Vehicle.KMFundingCHF = roundMoney(projection.CurrentPots.Vehicle.KMFundingCHF + cost)
+		projection.CurrentPots.Vehicle.UsageFundingCHF = roundMoney(projection.CurrentPots.Vehicle.UsageFundingCHF + cost)
 		bucketTotals["usage"] = roundMoney(bucketTotals["usage"] + cost)
 		addAccountingBalance(balances, trip.UserName, -cost)
 		addAccountingBalance(settlementBalances, trip.UserName, -cost)
@@ -820,8 +863,16 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 		nights := accountingBookingNights(booking)
 		if person != "" {
 			cost := roundMoney(nights * settings.NightRateCHF)
+			vehicleShare := roundMoney(cost / 2)
+			livingShare := roundMoney(cost - vehicleShare)
 			nightsByPerson[person] = roundMoney(nightsByPerson[person] + nights)
 			usageByPerson[person] = roundMoney(usageByPerson[person] + cost)
+			netUsageByPerson[person] = roundMoney(netUsageByPerson[person] + cost)
+			nightLivingChargesByPerson[person] = roundMoney(nightLivingChargesByPerson[person] + livingShare)
+			projection.CurrentPots.Vehicle.NightFundingCHF = roundMoney(projection.CurrentPots.Vehicle.NightFundingCHF + vehicleShare)
+			projection.CurrentPots.Vehicle.UsageFundingCHF = roundMoney(projection.CurrentPots.Vehicle.UsageFundingCHF + vehicleShare)
+			projection.CurrentPots.LivingWork.NightFundingCHF = roundMoney(projection.CurrentPots.LivingWork.NightFundingCHF + livingShare)
+			projection.CurrentPots.LivingWork.UsageFundingCHF = roundMoney(projection.CurrentPots.LivingWork.UsageFundingCHF + livingShare)
 			bucketTotals["usage"] = roundMoney(bucketTotals["usage"] + cost)
 			addAccountingBalance(balances, person, -cost)
 			addAccountingBalance(settlementBalances, person, -cost)
@@ -844,6 +895,9 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 			continue
 		}
 		bucketTotals["shared_running"] = roundMoney(bucketTotals["shared_running"] + amount)
+		projection.CurrentPots.Vehicle.FuelCostsCHF = roundMoney(projection.CurrentPots.Vehicle.FuelCostsCHF + amount)
+		projection.CurrentPots.Vehicle.RunningCostsCHF = roundMoney(projection.CurrentPots.Vehicle.RunningCostsCHF + amount)
+		projection.CurrentPots.Vehicle.CostsCHF = roundMoney(projection.CurrentPots.Vehicle.CostsCHF + amount)
 		projection.SharedPot.CurrentCostsCHF = roundMoney(projection.SharedPot.CurrentCostsCHF + amount)
 		projection.SharedPot.FuelCostsCHF = roundMoney(projection.SharedPot.FuelCostsCHF + amount)
 		projection.SharedPot.OutflowCHF = roundMoney(projection.SharedPot.OutflowCHF + amount)
@@ -861,10 +915,25 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 		credit := roundMoney(entry.Days * settings.WorkdayRateCHF)
 		workCreditsByPerson[entry.Person] = roundMoney(workCreditsByPerson[entry.Person] + credit)
 		bucketTotals["work_credit"] = roundMoney(bucketTotals["work_credit"] + credit)
-		addAccountingBalance(balances, entry.Person, credit)
-		addAccountingBalance(settlementBalances, entry.Person, credit)
-		addAccountingBalance(settlementBalances, sharedPotAccount, -credit)
-		projection.SharedPot.OutflowCHF = roundMoney(projection.SharedPot.OutflowCHF + credit)
+	}
+
+	for _, person := range people {
+		offset := roundMoney(math.Min(workCreditsByPerson[person], nightLivingChargesByPerson[person]))
+		carryForward := roundMoney(math.Max(0, workCreditsByPerson[person]-offset))
+		workOffsetsByPerson[person] = offset
+		workCarryForwardByPerson[person] = carryForward
+		if offset > 0 {
+			addAccountingBalance(balances, person, offset)
+			addAccountingBalance(settlementBalances, person, offset)
+			addAccountingBalance(settlementBalances, sharedPotAccount, -offset)
+			netUsageByPerson[person] = roundMoney(netUsageByPerson[person] - offset)
+			projection.SharedPot.UsageChargesCHF = roundMoney(projection.SharedPot.UsageChargesCHF - offset)
+			projection.SharedPot.InflowCHF = roundMoney(projection.SharedPot.InflowCHF - offset)
+			projection.CurrentPots.LivingWork.CostsCHF = roundMoney(projection.CurrentPots.LivingWork.CostsCHF + offset)
+			projection.CurrentPots.LivingWork.WorkOffsetCHF = roundMoney(projection.CurrentPots.LivingWork.WorkOffsetCHF + offset)
+		}
+		projection.CurrentPots.LivingWork.WorkCreditsCHF = roundMoney(projection.CurrentPots.LivingWork.WorkCreditsCHF + workCreditsByPerson[person])
+		projection.CurrentPots.LivingWork.WorkCarryForwardCHF = roundMoney(projection.CurrentPots.LivingWork.WorkCarryForwardCHF + carryForward)
 	}
 
 	for _, entry := range liveCostEntries {
@@ -893,7 +962,14 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 			projection.SharedPot.InflowCHF = roundMoney(projection.SharedPot.InflowCHF + amount)
 			continue
 		}
-		if entry.Bucket == "shared_running" || entry.Bucket == "usage" {
+		if entry.Bucket == "shared_running" || entry.Bucket == "usage" || entry.Bucket == "van_investment" {
+			if accountingCurrentCostPot(entry) == "living_work" {
+				projection.CurrentPots.LivingWork.LivingCostsCHF = roundMoney(projection.CurrentPots.LivingWork.LivingCostsCHF + amount)
+				projection.CurrentPots.LivingWork.CostsCHF = roundMoney(projection.CurrentPots.LivingWork.CostsCHF + amount)
+			} else {
+				projection.CurrentPots.Vehicle.RunningCostsCHF = roundMoney(projection.CurrentPots.Vehicle.RunningCostsCHF + amount)
+				projection.CurrentPots.Vehicle.CostsCHF = roundMoney(projection.CurrentPots.Vehicle.CostsCHF + amount)
+			}
 			projection.SharedPot.CurrentCostsCHF = roundMoney(projection.SharedPot.CurrentCostsCHF + amount)
 			projection.SharedPot.OutflowCHF = roundMoney(projection.SharedPot.OutflowCHF + amount)
 			if entry.FundingAccount != sharedPotAccount {
@@ -920,14 +996,13 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 	surplusBeforePolicy := roundMoney(math.Max(0, projection.SharedPot.InflowCHF-projection.SharedPot.OutflowCHF))
 	reserveNeed := math.Max(0, settings.ReserveTargetCHF)
 	reserveAllocation := roundMoney(math.Min(reserveNeed, surplusBeforePolicy*(settings.SurplusReservePercent/100)))
-	historicalRepayment := roundMoney(math.Min(
-		math.Max(0, surplusBeforePolicy-reserveAllocation),
-		surplusBeforePolicy*(settings.SurplusHistoricalRepaymentPercent/100),
-	))
+	historicalRepayment := 0.0
 	projection.SharedPot.ReserveAllocationCHF = reserveAllocation
 	projection.SharedPot.HistoricalRepaymentCHF = historicalRepayment
 	projection.SharedPot.OutflowCHF = roundMoney(projection.SharedPot.OutflowCHF + reserveAllocation + historicalRepayment)
 	projection.SharedPot.BalanceCHF = roundMoney(projection.SharedPot.InflowCHF - projection.SharedPot.OutflowCHF)
+	projection.CurrentPots.Vehicle = finishAccountingCurrentPot(projection.CurrentPots.Vehicle)
+	projection.CurrentPots.LivingWork = finishAccountingCurrentPot(projection.CurrentPots.LivingWork)
 	projection.PersonBalances = roundMap(balances)
 	projection.SettlementBalances = roundMap(settlementBalances)
 	projection.SuggestedSettlements = buildAccountingSuggestedSettlements(projection.SettlementBalances, people)
@@ -984,8 +1059,119 @@ func addAccountingBalance(balances map[string]float64, person string, amount flo
 	balances[person] = roundMoney(balances[person] + amount)
 }
 
+func finishAccountingCurrentPot(pot accountingCurrentPotProjection) accountingCurrentPotProjection {
+	pot.UsageFundingCHF = roundMoney(pot.UsageFundingCHF)
+	pot.CostsCHF = roundMoney(pot.CostsCHF)
+	pot.BalanceCHF = roundMoney(pot.UsageFundingCHF - pot.CostsCHF)
+	pot.DeficitCHF = roundMoney(math.Max(0, -pot.BalanceCHF))
+	pot.SurplusCHF = roundMoney(math.Max(0, pot.BalanceCHF))
+	pot.KMFundingCHF = roundMoney(pot.KMFundingCHF)
+	pot.NightFundingCHF = roundMoney(pot.NightFundingCHF)
+	pot.FuelCostsCHF = roundMoney(pot.FuelCostsCHF)
+	pot.RunningCostsCHF = roundMoney(pot.RunningCostsCHF)
+	pot.LivingCostsCHF = roundMoney(pot.LivingCostsCHF)
+	pot.WorkCreditsCHF = roundMoney(pot.WorkCreditsCHF)
+	pot.WorkOffsetCHF = roundMoney(pot.WorkOffsetCHF)
+	pot.WorkCarryForwardCHF = roundMoney(pot.WorkCarryForwardCHF)
+	return pot
+}
+
+func accountingCurrentCostPot(entry costEntryPayload) string {
+	category := strings.TrimSpace(entry.Category)
+	description := strings.ToLower(entry.Description + " " + entry.Notes)
+	vehicleCategories := map[string]struct{}{
+		"vehicle_purchase":  {},
+		"repairs_service":   {},
+		"registration_fees": {},
+		"insurance":         {},
+		"taxes":             {},
+		"fuel_energy":       {},
+	}
+	livingCategories := map[string]struct{}{
+		"hardware_material": {},
+		"interior_build":    {},
+		"equipment":         {},
+	}
+	if _, ok := vehicleCategories[category]; ok {
+		return "vehicle"
+	}
+	if _, ok := livingCategories[category]; ok {
+		return "living_work"
+	}
+	for _, keyword := range []string{
+		"auspuff",
+		"vignette",
+		"pneu",
+		"reifen",
+		"service",
+		"werkstatt",
+		"repar",
+		"versicherung",
+		"steuer",
+		"strassenverkehr",
+		"bremse",
+		"motor",
+		"diesel",
+		"benzin",
+		"tcs",
+	} {
+		if strings.Contains(description, keyword) {
+			return "vehicle"
+		}
+	}
+	for _, keyword := range []string{
+		"bett",
+		"sofa",
+		"couch",
+		"stoff",
+		"propan",
+		"gasflasche",
+		"lattenrost",
+		"futon",
+		"scharnier",
+		"kugelschnäpper",
+		"koch",
+		"kitchen",
+		"matratze",
+		"polster",
+		"vorhang",
+	} {
+		if strings.Contains(description, keyword) {
+			return "living_work"
+		}
+	}
+	if entry.Bucket == "van_investment" {
+		return "living_work"
+	}
+	return "vehicle"
+}
+
 func dateInAccountingPeriod(value, period string) bool {
-	return period == "" || accountingPeriodFromDate(value) == period
+	if period == "" {
+		return true
+	}
+	if period == accountingCurrentOpenPeriod {
+		date := strings.TrimSpace(value)
+		if len(date) >= 10 {
+			date = date[:10]
+		}
+		return date >= accountingCurrentOpenStartDate
+	}
+	return accountingPeriodFromDate(value) == period
+}
+
+func monthInAccountingPeriod(month, period string) bool {
+	trimmed := strings.TrimSpace(month)
+	if len(trimmed) >= 7 {
+		trimmed = trimmed[:7]
+	}
+	if period == "" {
+		return trimmed != ""
+	}
+	if period == accountingCurrentOpenPeriod {
+		return trimmed >= accountingCurrentOpenStartDate[:7]
+	}
+	return trimmed == period
 }
 
 func filterTripsByPeriod(trips []tripRecord, period string) []tripRecord {
@@ -1021,7 +1207,7 @@ func filterFuelEntriesByPeriod(entries []fuelRecord, period string) []fuelRecord
 func filterWorkEntriesByPeriod(entries []workEntryPayload, period string) []workEntryPayload {
 	filtered := make([]workEntryPayload, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Month == period {
+		if monthInAccountingPeriod(entry.Month, period) {
 			filtered = append(filtered, entry)
 		}
 	}
