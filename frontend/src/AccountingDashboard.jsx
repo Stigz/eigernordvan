@@ -13,15 +13,16 @@ import {
 const formatChf = (value) => `CHF ${Number(value || 0).toFixed(2)}`;
 const formatParty = (value) => (value === "shared_pot" ? "Shared pot" : value);
 const formatSourceCounts = (counts = {}) =>
-  `${Number(counts.cost_entries || 0)} costs, ${Number(counts.trip_entries || 0)} trips, ${Number(counts.booking_entries || 0)} bookings, ${Number(
-    counts.work_entries || 0,
-  )} work rows`;
+  `${Number(counts.cost_entries || 0)} manual costs, ${Number(counts.fuel_entries || 0)} gas rows, ${Number(counts.trip_entries || 0)} trips, ${Number(
+    counts.booking_entries || 0,
+  )} bookings, ${Number(counts.work_entries || 0)} work rows`;
 const formatClosedSourceCounts = (counts = {}) =>
   formatSourceCounts({
     cost_entries: counts.cost_entries ?? counts.costEntries,
     historical_cost_entries: counts.historical_cost_entries ?? counts.historicalCostEntries,
     trip_entries: counts.trip_entries ?? counts.tripEntries,
     booking_entries: counts.booking_entries ?? counts.bookingEntries,
+    fuel_entries: counts.fuel_entries ?? counts.fuelEntries,
     work_entries: counts.work_entries ?? counts.workEntries,
   });
 const formatSettlementSummary = (rows = []) =>
@@ -50,7 +51,7 @@ const closeRequestFromProjection = (projection) => ({
   notes: "Generated from backend accounting preview",
 });
 
-export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trips = [], workEntries = [], people = accountingPeople }) {
+export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trips = [], fuelEntries = [], workEntries = [], people = accountingPeople }) {
   const [settings, setSettings] = useState(defaultAccountingSettings);
   const [period, setPeriod] = useState(currentPeriod());
   const [bookings, setBookings] = useState([]);
@@ -127,12 +128,13 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
         costEntries,
         trips,
         bookings,
+        fuelEntries,
         workEntries,
         settings,
         people,
         period,
       }),
-    [bookings, costEntries, people, period, settings, trips, workEntries],
+    [bookings, costEntries, fuelEntries, people, period, settings, trips, workEntries],
   );
   const apiProjectionMatchesSettings = Boolean(
     apiProjection && apiProjection.period === period && settingsSignature(apiProjection.settings) === settingsSignature(settings),
@@ -301,6 +303,11 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
             <p className="summary-label">Current costs</p>
             <p className="summary-value">{formatChf(projection.sharedPot.current_costs_chf)}</p>
             <p className="summary-hint">Shared running and usage costs first.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Gas costs</p>
+            <p className="summary-value">{formatChf(projection.sharedPot.fuel_costs_chf)}</p>
+            <p className="summary-hint">Pulled from the Gas tab.</p>
           </article>
           <article className="summary-card compact-summary-card">
             <p className="summary-label">Reserve</p>

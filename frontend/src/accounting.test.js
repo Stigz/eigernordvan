@@ -94,6 +94,7 @@ describe("calculateAccountingProjection", () => {
       historical_cost_entries: 1,
       trip_entries: 1,
       booking_entries: 1,
+      fuel_entries: 0,
       work_entries: 1,
     });
   });
@@ -137,6 +138,26 @@ describe("calculateAccountingProjection", () => {
     expect(projection.sharedPot.reserve_allocation_chf).toBe(420);
     expect(projection.sharedPot.historical_repayment_chf).toBe(180);
     expect(projection.sharedPot.balance_chf).toBe(0);
+  });
+
+  it("includes gas tab spend as current running cost without a cost entry", () => {
+    const projection = calculateAccountingProjection({
+      settings: { ...settings, monthly_payment_chf: 0 },
+      people: ["Nic", "Kayla"],
+      period: "2026-06",
+      fuelEntries: [
+        { id: "fuel-1", user_name: "Nic", timestamp: "2026-06-10T12:00:00Z", cost_chf: 80, liters: 40, odometer_km: 1200 },
+        { id: "fuel-missed", user_name: "Kayla", timestamp: "2026-06-11T12:00:00Z", cost_chf: 0, missed: true },
+      ],
+    });
+
+    expect(projection.sourceCounts).toMatchObject({ cost_entries: 0, fuel_entries: 1 });
+    expect(projection.sharedPot.current_costs_chf).toBe(80);
+    expect(projection.sharedPot.fuel_costs_chf).toBe(80);
+    expect(projection.bucketTotals.shared_running).toBe(80);
+    expect(projection.suggestedSettlements).toEqual([
+      { from_person: "shared_pot", to_person: "Nic", amount_chf: 80, reason: "Shared pot reimbursement" },
+    ]);
   });
 
   it("splits policy surplus from the same base amount", () => {
@@ -236,6 +257,7 @@ describe("calculateAccountingProjection", () => {
       period: fixture.period,
       trips: fixture.trips,
       bookings: fixture.bookings,
+      fuelEntries: fixture.fuel_entries,
       workEntries: fixture.work_entries,
       costEntries: fixture.cost_entries,
     });
@@ -312,7 +334,7 @@ describe("normalizeAccountingProjectionFromApi", () => {
         person_balances: { Nic: -60, Kayla: 50 },
         settlement_balances: { Nic: -60, Kayla: 50, shared_pot: 10 },
         suggested_settlements: [{ from_person: " Nic ", to_person: " shared_pot ", amount_chf: "60.129", reason: " Shared pot due " }],
-        source_counts: { cost_entries: 2, historical_cost_entries: 1, trip_entries: 1, booking_entries: 1, work_entries: 1 },
+        source_counts: { cost_entries: 2, historical_cost_entries: 1, trip_entries: 1, booking_entries: 1, fuel_entries: 1, work_entries: 1 },
         historical: { investment_chf: 8900, rows: 1 },
       },
       { people: ["Nic", "Kayla"] },
@@ -323,6 +345,7 @@ describe("normalizeAccountingProjectionFromApi", () => {
     expect(projection.monthlyContributionsCHF).toBe(150);
     expect(projection.sharedPot.inflow_chf).toBe(300.13);
     expect(projection.sharedPot.external_income_chf).toBe(0);
+    expect(projection.sharedPot.fuel_costs_chf).toBe(0);
     expect(projection.usageByPerson).toEqual({ Nic: 60, Kayla: 0 });
     expect(projection.workCreditsByPerson).toEqual({ Nic: 0, Kayla: 50 });
     expect(projection.settlementBalances.shared_pot).toBe(10);
@@ -330,6 +353,7 @@ describe("normalizeAccountingProjectionFromApi", () => {
       { from_person: "Nic", to_person: "shared_pot", amount_chf: 60.13, reason: "Shared pot due" },
     ]);
     expect(projection.sourceCounts.cost_entries).toBe(2);
+    expect(projection.sourceCounts.fuel_entries).toBe(1);
     expect(projection.historical).toEqual({ investment_chf: 8900, rows: 1 });
   });
 

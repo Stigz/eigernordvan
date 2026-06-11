@@ -49,11 +49,12 @@ const sharedPotProjectionKeys = [
   "usage_charges_chf",
   "external_income_chf",
   "current_costs_chf",
+  "fuel_costs_chf",
   "reserve_allocation_chf",
   "historical_repayment_chf",
   "balance_chf",
 ];
-const sourceCountKeys = ["cost_entries", "historical_cost_entries", "trip_entries", "booking_entries", "work_entries"];
+const sourceCountKeys = ["cost_entries", "historical_cost_entries", "trip_entries", "booking_entries", "fuel_entries", "work_entries"];
 const monthlyCloseTotalKeys = [
   "monthly_contributions_chf",
   "shared_pot_inflow_chf",
@@ -64,6 +65,7 @@ const monthlyCloseTotalKeys = [
   "usage_charges_chf",
   "external_income_chf",
   "current_costs_chf",
+  "fuel_costs_chf",
   "reserve_allocation_chf",
   "historical_repayment_chf",
   "historical_investment_basis_chf",
@@ -332,6 +334,7 @@ export const calculateAccountingProjection = ({
   costEntries = [],
   trips = [],
   bookings = [],
+  fuelEntries = [],
   workEntries = [],
   settings = defaultAccountingSettings,
   people = accountingPeople,
@@ -350,6 +353,7 @@ export const calculateAccountingProjection = ({
   const historicalCostEntries = normalizedCosts.filter((entry) => entry.historical);
   const periodTrips = trips.filter((trip) => dateInPeriod(trip.timestamp, period));
   const periodBookings = bookings.filter((booking) => booking.status === "booked" && dateInPeriod(booking.start_date, period));
+  const periodFuelEntries = fuelEntries.filter((entry) => !entry.missed && numberOr(entry.cost_chf ?? entry.fuel_cost_chf) > 0 && dateInPeriod(entry.timestamp, period));
   const periodWorkEntries = workEntries.filter((entry) => entry.month === period);
 
   const projection = {
@@ -364,6 +368,7 @@ export const calculateAccountingProjection = ({
       usage_charges_chf: 0,
       external_income_chf: 0,
       current_costs_chf: 0,
+      fuel_costs_chf: 0,
       reserve_allocation_chf: 0,
       historical_repayment_chf: 0,
       balance_chf: 0,
@@ -381,6 +386,7 @@ export const calculateAccountingProjection = ({
       historical_cost_entries: historicalCostEntries.length,
       trip_entries: periodTrips.length,
       booking_entries: periodBookings.length,
+      fuel_entries: periodFuelEntries.length,
       work_entries: periodWorkEntries.length,
     },
     historical: {
@@ -432,6 +438,20 @@ export const calculateAccountingProjection = ({
       bucketTotals.income = roundMoney(bucketTotals.income + income);
       projection.sharedPot.external_income_chf = roundMoney(projection.sharedPot.external_income_chf + income);
       projection.sharedPot.inflow_chf = roundMoney(projection.sharedPot.inflow_chf + income);
+    }
+  });
+
+  periodFuelEntries.forEach((entry) => {
+    const amount = roundMoney(numberOr(entry.cost_chf ?? entry.fuel_cost_chf));
+    if (amount <= 0) return;
+    bucketTotals.shared_running = roundMoney(bucketTotals.shared_running + amount);
+    projection.sharedPot.current_costs_chf = roundMoney(projection.sharedPot.current_costs_chf + amount);
+    projection.sharedPot.fuel_costs_chf = roundMoney(projection.sharedPot.fuel_costs_chf + amount);
+    projection.sharedPot.outflow_chf = roundMoney(projection.sharedPot.outflow_chf + amount);
+    if (people.includes(entry.user_name)) {
+      addBalance(balances, entry.user_name, amount);
+      addBalance(settlementBalances, entry.user_name, amount);
+      addBalance(settlementBalances, sharedPotAccount, -amount);
     }
   });
 

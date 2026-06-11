@@ -57,6 +57,17 @@
       "work_notes": "Synthetic fixture half-day"
     }
   ],
+  "fuel_entries": [
+    {
+      "id": "fuel-1",
+      "timestamp": "2026-06-11T12:00:00Z",
+      "user_name": "Nic",
+      "odometer_km": 1200,
+      "liters": 30,
+      "fuel_cost_chf": 40,
+      "event_type": "fuel_manual"
+    }
+  ],
   "cost_entries": [
     {
       "id": "cost-shared-1",
@@ -109,9 +120,10 @@
       "contributions_paid_chf": 50,
       "usage_charges_chf": 160,
       "external_income_chf": 300,
-      "current_costs_chf": 120,
-      "reserve_allocation_chf": 273,
-      "historical_repayment_chf": 117,
+      "current_costs_chf": 160,
+      "fuel_costs_chf": 40,
+      "reserve_allocation_chf": 245,
+      "historical_repayment_chf": 105,
       "balance_chf": 0
     },
     "usage_by_person": {
@@ -133,18 +145,18 @@
     "bucket_totals": {
       "usage": 160,
       "income": 300,
-      "shared_running": 120,
+      "shared_running": 160,
       "settlement": 50,
       "work_credit": 50
     },
     "person_balances": {
-      "Nic": 60,
+      "Nic": 100,
       "Kayla": -100
     },
     "settlement_balances": {
-      "Nic": 60,
+      "Nic": 100,
       "Kayla": -100,
-      "shared_pot": 40
+      "shared_pot": 0
     },
     "suggested_settlements": [
       {
@@ -156,7 +168,7 @@
       {
         "from_person": "shared_pot",
         "to_person": "Nic",
-        "amount_chf": 60,
+        "amount_chf": 100,
         "reason": "Shared pot reimbursement"
       }
     ],
@@ -165,6 +177,7 @@
       "historical_cost_entries": 1,
       "trip_entries": 1,
       "booking_entries": 2,
+      "fuel_entries": 1,
       "work_entries": 1
     },
     "historical": {

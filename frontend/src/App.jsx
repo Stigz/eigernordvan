@@ -771,7 +771,7 @@ export default function App() {
   const [isWorkLoaded, setIsWorkLoaded] = useState(false);
   const [costState, setCostState] = useState(() => parseCostState());
   const [costForm, setCostForm] = useState(() => ({ ...initialCostForm, date: formatDateISO(new Date()) }));
-  const [costFilters, setCostFilters] = useState({ year: "all", category: "all", person: "all", type: "all" });
+  const [costFilters, setCostFilters] = useState({ scope: "current", year: "all", category: "all", person: "all", type: "all" });
   const [costSyncStatus, setCostSyncStatus] = useState({ state: "idle", message: "" });
   const [isCostHydratedFromServer, setIsCostHydratedFromServer] = useState(false);
   const [intakeContext, setIntakeContext] = useState({ people: [], open_trip: null, suggested_start_km: null });
@@ -1083,6 +1083,13 @@ export default function App() {
   const filteredCostEntries = useMemo(
     () =>
       sortedCostEntries.filter((entry) => {
+        const isHistorical = Boolean(entry.historical_only || entry.historical);
+        if (costFilters.scope === "current" && isHistorical) {
+          return false;
+        }
+        if (costFilters.scope === "historical" && !isHistorical) {
+          return false;
+        }
         if (costFilters.type !== "all" && entry.type !== costFilters.type) {
           return false;
         }
@@ -1136,12 +1143,16 @@ export default function App() {
     const balances = Object.fromEntries(workPeople.map((person) => [person, 0]));
     let totalExpense = 0;
     let totalIncome = 0;
+    let historicalTotal = 0;
     let historicalCount = 0;
     let settlementCount = 0;
 
     (costState.entries || []).forEach((entry) => {
-      if (entry.historical_only) {
+      const isHistorical = Boolean(entry.historical_only || entry.historical);
+      if (isHistorical) {
         historicalCount += 1;
+        historicalTotal += Number(entry.amount_chf || 0);
+        return;
       }
       const amount = Number(entry.amount_chf || 0);
       if (!Number.isFinite(amount) || amount <= 0) {
@@ -1186,6 +1197,7 @@ export default function App() {
       totalExpense,
       totalIncome,
       netProjectCost: totalExpense - totalIncome,
+      historicalTotal,
       historicalCount,
       settlementCount,
       balances,
@@ -2825,20 +2837,33 @@ export default function App() {
               </header>
               <div className="summary-grid compact-summary-grid">
                 <article className="summary-card compact-summary-card">
-                  <p className="summary-label">Expenses</p>
+                  <p className="summary-label">Current expenses</p>
                   <p className="summary-value">CHF {costSummary.totalExpense.toFixed(2)}</p>
                 </article>
                 <article className="summary-card compact-summary-card">
-                  <p className="summary-label">Income</p>
+                  <p className="summary-label">Current income</p>
                   <p className="summary-value">CHF {costSummary.totalIncome.toFixed(2)}</p>
                 </article>
                 <article className="summary-card compact-summary-card">
-                  <p className="summary-label">Net project cost</p>
+                  <p className="summary-label">Current net</p>
                   <p className="summary-value">CHF {costSummary.netProjectCost.toFixed(2)}</p>
-                  <p className="summary-hint">{costSummary.historicalCount} historical-only entries flagged</p>
+                  <p className="summary-hint">Historical/audit rows excluded.</p>
+                </article>
+                <article className="summary-card compact-summary-card">
+                  <p className="summary-label">Historical/audit</p>
+                  <p className="summary-value">CHF {costSummary.historicalTotal.toFixed(2)}</p>
+                  <p className="summary-hint">{costSummary.historicalCount} rows kept separate</p>
                 </article>
               </div>
               <div className="inline-grid two-col">
+                <label className="field">
+                  <span>Show</span>
+                  <select name="scope" value={costFilters.scope} onChange={handleCostFilterChange}>
+                    <option value="current">Current running/income</option>
+                    <option value="historical">Historical/audit</option>
+                    <option value="all">All records</option>
+                  </select>
+                </label>
                 <label className="field">
                   <span>Filter year</span>
                   <select name="year" value={costFilters.year} onChange={handleCostFilterChange}>
@@ -3317,6 +3342,7 @@ export default function App() {
             apiBaseUrl={apiBaseUrl}
             costEntries={costState.entries}
             trips={trips}
+            fuelEntries={gasEntries}
             workEntries={workState.entries}
             people={workPeople}
           />

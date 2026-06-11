@@ -76,6 +76,7 @@ type accountingSharedPotProjection struct {
 	UsageChargesCHF        float64 `json:"usage_charges_chf"`
 	ExternalIncomeCHF      float64 `json:"external_income_chf"`
 	CurrentCostsCHF        float64 `json:"current_costs_chf"`
+	FuelCostsCHF           float64 `json:"fuel_costs_chf"`
 	ReserveAllocationCHF   float64 `json:"reserve_allocation_chf"`
 	HistoricalRepaymentCHF float64 `json:"historical_repayment_chf"`
 	BalanceCHF             float64 `json:"balance_chf"`
@@ -86,6 +87,7 @@ type accountingSourceCounts struct {
 	HistoricalCostEntries int `json:"historical_cost_entries"`
 	TripEntries           int `json:"trip_entries"`
 	BookingEntries        int `json:"booking_entries"`
+	FuelEntries           int `json:"fuel_entries"`
 	WorkEntries           int `json:"work_entries"`
 }
 
@@ -115,6 +117,7 @@ type accountingProjectionInput struct {
 	CostEntries []costEntryPayload
 	Trips       []tripRecord
 	Bookings    []bookingRecord
+	FuelEntries []fuelRecord
 	WorkEntries []workEntryPayload
 	Settings    accountingSettingsPayload
 	People      []string
@@ -465,6 +468,10 @@ func (h *handler) buildLiveAccountingProjection(ctx context.Context, period stri
 	if err != nil {
 		return accountingProjectionPayload{}, err
 	}
+	fuelEntries, err := h.listFuel(ctx)
+	if err != nil {
+		return accountingProjectionPayload{}, err
+	}
 	workState, err := h.getWorkState(ctx)
 	if err != nil {
 		return accountingProjectionPayload{}, err
@@ -478,6 +485,7 @@ func (h *handler) buildLiveAccountingProjection(ctx context.Context, period stri
 		CostEntries: costEntries,
 		Trips:       trips,
 		Bookings:    bookings,
+		FuelEntries: fuelEntries,
 		WorkEntries: workState.Entries,
 		Settings:    settings,
 		People:      defaultAccountingPeople,
@@ -696,6 +704,7 @@ func monthlyCloseFromProjection(projection accountingProjectionPayload, notes st
 			"usage_charges_chf":               projection.SharedPot.UsageChargesCHF,
 			"external_income_chf":             projection.SharedPot.ExternalIncomeCHF,
 			"current_costs_chf":               projection.SharedPot.CurrentCostsCHF,
+			"fuel_costs_chf":                  projection.SharedPot.FuelCostsCHF,
 			"reserve_allocation_chf":          projection.SharedPot.ReserveAllocationCHF,
 			"historical_repayment_chf":        projection.SharedPot.HistoricalRepaymentCHF,
 			"historical_investment_basis_chf": projection.Historical.InvestmentCHF,
@@ -705,6 +714,7 @@ func monthlyCloseFromProjection(projection accountingProjectionPayload, notes st
 			"historical_cost_entries": projection.SourceCounts.HistoricalCostEntries,
 			"trip_entries":            projection.SourceCounts.TripEntries,
 			"booking_entries":         projection.SourceCounts.BookingEntries,
+			"fuel_entries":            projection.SourceCounts.FuelEntries,
 			"work_entries":            projection.SourceCounts.WorkEntries,
 		},
 		PersonBalances:       projection.PersonBalances,
@@ -744,6 +754,7 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 	}
 	periodTrips := filterTripsByPeriod(input.Trips, period)
 	periodBookings := filterBookingsByPeriod(input.Bookings, period)
+	periodFuelEntries := filterFuelEntriesByPeriod(input.FuelEntries, period)
 	periodWorkEntries := filterWorkEntriesByPeriod(input.WorkEntries, period)
 
 	balances := emptyAccountingPersonMap(people)
@@ -772,6 +783,7 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 			HistoricalCostEntries: len(historicalCostEntries),
 			TripEntries:           len(periodTrips),
 			BookingEntries:        len(periodBookings),
+			FuelEntries:           len(periodFuelEntries),
 			WorkEntries:           len(periodWorkEntries),
 		},
 		Historical: accountingHistoricalSummary{
@@ -823,6 +835,22 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 			bucketTotals["income"] = roundMoney(bucketTotals["income"] + income)
 			projection.SharedPot.ExternalIncomeCHF = roundMoney(projection.SharedPot.ExternalIncomeCHF + income)
 			projection.SharedPot.InflowCHF = roundMoney(projection.SharedPot.InflowCHF + income)
+		}
+	}
+
+	for _, fuel := range periodFuelEntries {
+		amount := roundMoney(fuel.FuelCostCHF)
+		if fuel.Missed || amount <= 0 {
+			continue
+		}
+		bucketTotals["shared_running"] = roundMoney(bucketTotals["shared_running"] + amount)
+		projection.SharedPot.CurrentCostsCHF = roundMoney(projection.SharedPot.CurrentCostsCHF + amount)
+		projection.SharedPot.FuelCostsCHF = roundMoney(projection.SharedPot.FuelCostsCHF + amount)
+		projection.SharedPot.OutflowCHF = roundMoney(projection.SharedPot.OutflowCHF + amount)
+		if containsString(people, fuel.UserName) {
+			addAccountingBalance(balances, fuel.UserName, amount)
+			addAccountingBalance(settlementBalances, fuel.UserName, amount)
+			addAccountingBalance(settlementBalances, sharedPotAccount, -amount)
 		}
 	}
 
@@ -975,6 +1003,16 @@ func filterBookingsByPeriod(bookings []bookingRecord, period string) []bookingRe
 	for _, booking := range bookings {
 		if booking.Status == "booked" && dateInAccountingPeriod(booking.StartDate, period) {
 			filtered = append(filtered, booking)
+		}
+	}
+	return filtered
+}
+
+func filterFuelEntriesByPeriod(entries []fuelRecord, period string) []fuelRecord {
+	filtered := make([]fuelRecord, 0, len(entries))
+	for _, entry := range entries {
+		if dateInAccountingPeriod(entry.Timestamp, period) && !entry.Missed && entry.FuelCostCHF > 0 {
+			filtered = append(filtered, entry)
 		}
 	}
 	return filtered
