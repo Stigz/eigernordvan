@@ -135,8 +135,25 @@ describe("calculateAccountingProjection", () => {
 
     expect(projection.sharedPot.current_costs_chf).toBe(400);
     expect(projection.sharedPot.reserve_allocation_chf).toBe(420);
-    expect(projection.sharedPot.historical_repayment_chf).toBe(54);
-    expect(projection.sharedPot.balance_chf).toBe(126);
+    expect(projection.sharedPot.historical_repayment_chf).toBe(180);
+    expect(projection.sharedPot.balance_chf).toBe(0);
+  });
+
+  it("splits policy surplus from the same base amount", () => {
+    const projection = calculateAccountingProjection({
+      settings,
+      people: ["Nic", "Kayla", "Jeanne", "Lüku"],
+      period: "2026-06",
+      trips: [
+        { user_name: "Nic", timestamp: "2026-06-10T12:00:00Z", delta_km: 164 },
+        { user_name: "Kayla", timestamp: "2026-06-11T12:00:00Z", delta_km: 12 },
+      ],
+    });
+
+    expect(projection.sharedPot.inflow_chf).toBe(288);
+    expect(projection.sharedPot.reserve_allocation_chf).toBe(201.6);
+    expect(projection.sharedPot.historical_repayment_chf).toBe(86.4);
+    expect(projection.sharedPot.balance_chf).toBe(0);
   });
 
   it("suggests monthly payments into the shared pot", () => {
@@ -204,7 +221,7 @@ describe("calculateAccountingProjection", () => {
     });
 
     expect(projection.sharedPot.current_costs_chf).toBe(120);
-    expect(projection.sharedPot.outflow_chf).toBe(183.2);
+    expect(projection.sharedPot.outflow_chf).toBe(200);
     expect(projection.suggestedSettlements).toEqual([
       { from_person: "Kayla", to_person: "shared_pot", amount_chf: 100, reason: "Shared pot due" },
       { from_person: "shared_pot", to_person: "Nic", amount_chf: 20, reason: "Shared pot reimbursement" },

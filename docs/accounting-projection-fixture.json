@@ -104,15 +104,15 @@
     "monthly_contributions_chf": 100,
     "shared_pot": {
       "inflow_chf": 560,
-      "outflow_chf": 478.1,
+      "outflow_chf": 560,
       "contributions_due_chf": 100,
       "contributions_paid_chf": 50,
       "usage_charges_chf": 160,
       "external_income_chf": 300,
       "current_costs_chf": 120,
       "reserve_allocation_chf": 273,
-      "historical_repayment_chf": 35.1,
-      "balance_chf": 81.9
+      "historical_repayment_chf": 117,
+      "balance_chf": 0
     },
     "usage_by_person": {
       "Nic": 60,

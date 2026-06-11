@@ -498,7 +498,10 @@ export const calculateAccountingProjection = ({
   const reserveNeed = Math.max(0, normalizedSettings.reserve_target_chf);
   const reserveAllocation = roundMoney(Math.min(reserveNeed, surplusBeforePolicy * (normalizedSettings.surplus_reserve_percent / 100)));
   const historicalRepayment = roundMoney(
-    Math.max(0, surplusBeforePolicy - reserveAllocation) * (normalizedSettings.surplus_historical_repayment_percent / 100),
+    Math.min(
+      Math.max(0, surplusBeforePolicy - reserveAllocation),
+      surplusBeforePolicy * (normalizedSettings.surplus_historical_repayment_percent / 100),
+    ),
   );
 
   projection.sharedPot.reserve_allocation_chf = reserveAllocation;

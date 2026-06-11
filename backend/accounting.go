@@ -892,7 +892,10 @@ func buildAccountingProjection(input accountingProjectionInput) (accountingProje
 	surplusBeforePolicy := roundMoney(math.Max(0, projection.SharedPot.InflowCHF-projection.SharedPot.OutflowCHF))
 	reserveNeed := math.Max(0, settings.ReserveTargetCHF)
 	reserveAllocation := roundMoney(math.Min(reserveNeed, surplusBeforePolicy*(settings.SurplusReservePercent/100)))
-	historicalRepayment := roundMoney(math.Max(0, surplusBeforePolicy-reserveAllocation) * (settings.SurplusHistoricalRepaymentPercent / 100))
+	historicalRepayment := roundMoney(math.Min(
+		math.Max(0, surplusBeforePolicy-reserveAllocation),
+		surplusBeforePolicy*(settings.SurplusHistoricalRepaymentPercent/100),
+	))
 	projection.SharedPot.ReserveAllocationCHF = reserveAllocation
 	projection.SharedPot.HistoricalRepaymentCHF = historicalRepayment
 	projection.SharedPot.OutflowCHF = roundMoney(projection.SharedPot.OutflowCHF + reserveAllocation + historicalRepayment)

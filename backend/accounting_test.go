@@ -186,8 +186,8 @@ func TestBuildAccountingProjectionUsesStoredInputs(t *testing.T) {
 		t.Fatalf("unexpected projection totals: %+v", projection)
 	}
 	if projection.SharedPot.ReserveAllocationCHF != 63 ||
-		projection.SharedPot.HistoricalRepaymentCHF != 8.1 ||
-		projection.SharedPot.BalanceCHF != 18.9 {
+		projection.SharedPot.HistoricalRepaymentCHF != 27 ||
+		projection.SharedPot.BalanceCHF != 0 {
 		t.Fatalf("unexpected shared pot policy result: %+v", projection.SharedPot)
 	}
 	if projection.PersonBalances["Nic"] != 60 || projection.PersonBalances["Kayla"] != -100 {
