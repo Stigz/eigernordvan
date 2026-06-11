@@ -11,13 +11,24 @@ import {
   normalizeMonthlyCloseFromApi,
   sortMonthlyCloses,
 } from "./accounting";
+import { buildAccountingFlowModel } from "./accountingFlow";
 
 const formatChf = (value) => `CHF ${Number(value || 0).toFixed(2)}`;
-const formatParty = (value) => (value === "shared_pot" ? "Shared pot" : value);
+const formatSignedChf = (value) => {
+  const amount = Number(value || 0);
+  return amount < 0 ? `CHF -${Math.abs(amount).toFixed(2)}` : formatChf(amount);
+};
+const formatNumber = (value) => Number(value || 0).toFixed(1);
+const formatParty = (value) => (value === "shared_pot" ? "Gemeinsames Konto" : value);
+const reasonLabel = (value = "") => {
+  if (value === "Shared pot due") return "Ins gemeinsame Konto";
+  if (value === "Shared pot reimbursement") return "Rückerstattung aus Konto";
+  return value || "Ausgleich";
+};
 const formatSourceCounts = (counts = {}) =>
-  `${Number(counts.cost_entries || 0)} manual costs, ${Number(counts.fuel_entries || 0)} gas rows, ${Number(counts.trip_entries || 0)} trips, ${Number(
+  `${Number(counts.cost_entries || 0)} Kosten, ${Number(counts.fuel_entries || 0)} Gas, ${Number(counts.trip_entries || 0)} Fahrten, ${Number(
     counts.booking_entries || 0,
-  )} bookings, ${Number(counts.work_entries || 0)} work rows`;
+  )} Buchungen, ${Number(counts.work_entries || 0)} Arbeit`;
 const formatClosedSourceCounts = (counts = {}) =>
   formatSourceCounts({
     cost_entries: counts.cost_entries ?? counts.costEntries,
@@ -29,7 +40,7 @@ const formatClosedSourceCounts = (counts = {}) =>
   });
 const formatSettlementSummary = (rows = []) =>
   rows.length === 0
-    ? "No payments"
+    ? "Keine Zahlungen"
     : rows.map((row) => `${formatParty(row.from_person)} -> ${formatParty(row.to_person)} ${formatChf(row.amount_chf)}`).join("; ");
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
@@ -53,6 +64,398 @@ const closeRequestFromProjection = (projection) => ({
   notes: "Generated from backend accounting preview",
 });
 
+const splitLabel = (label = "") => {
+  const words = String(label).split(" ");
+  if (words.length < 3 || label.length < 20) return [label];
+  const midpoint = Math.ceil(words.length / 2);
+  return [words.slice(0, midpoint).join(" "), words.slice(midpoint).join(" ")];
+};
+
+const nodeAmount = (node) => {
+  if (!Number(node.amount || 0)) return "";
+  return formatChf(node.amount);
+};
+
+function FlowChart({ model, selectedId, onSelect }) {
+  const maxLinkAmount = Math.max(1, ...model.links.map((link) => Number(link.amount || 0)));
+  const personNodes = model.personRows.map((row, index) => ({
+    id: `person:${row.person}`,
+    x: 28,
+    y: 72 + index * 68,
+    w: 150,
+    h: 48,
+  }));
+  const fixedNodes = [
+    { id: "pot:vehicle", x: 326, y: 100, w: 210, h: 72 },
+    { id: "pot:living", x: 326, y: 242, w: 210, h: 72 },
+    { id: "pot:shared", x: 326, y: 386, w: 210, h: 72 },
+    { id: "pot:history", x: 326, y: 490, w: 210, h: 54 },
+    { id: "out:vehicle-costs", x: 718, y: 100, w: 210, h: 72 },
+    { id: "out:living-costs", x: 718, y: 242, w: 210, h: 72 },
+    { id: "out:reserve", x: 718, y: 364, w: 210, h: 54 },
+    { id: "out:balance", x: 718, y: 430, w: 210, h: 54 },
+    { id: "out:history", x: 718, y: 490, w: 210, h: 54 },
+  ];
+  const nodePositions = Object.fromEntries([...personNodes, ...fixedNodes].map((node) => [node.id, node]));
+  const nodes = model.nodes
+    .map((node) => ({ ...node, ...(nodePositions[node.id] || {}) }))
+    .filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
+
+  const select = (id) => {
+    if (id) onSelect(id);
+  };
+
+  const linkPath = (link) => {
+    const from = nodePositions[link.from];
+    const to = nodePositions[link.to];
+    if (!from || !to) return "";
+    const startX = from.x + from.w;
+    const startY = from.y + from.h / 2;
+    const endX = to.x;
+    const endY = to.y + to.h / 2;
+    const curve = Math.max(90, (endX - startX) / 2);
+    return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
+  };
+
+  return (
+    <div className="flow-chart-shell">
+      <svg className="flow-chart" viewBox="0 0 960 565" role="img" aria-label="Accounting flow overview">
+        <g className="flow-background-labels">
+          <text x="30" y="34">Personen</text>
+          <text x="326" y="34">2 Töpfe + Konto</text>
+          <text x="718" y="34">Wohin es geht</text>
+        </g>
+        <g className="flow-links">
+          {model.links.map((link) => {
+            const path = linkPath(link);
+            const width = Math.max(3, Math.min(22, 3 + (Number(link.amount || 0) / maxLinkAmount) * 18));
+            const isSelected = selectedId === link.id;
+            return (
+              <g key={link.id} className={`flow-link-group ${isSelected ? "selected" : ""}`}>
+                <path
+                  d={path}
+                  className="flow-hit"
+                  strokeWidth={Math.max(18, width + 12)}
+                  onClick={() => select(link.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") select(link.id);
+                  }}
+                  tabIndex="0"
+                />
+                <path
+                  d={path}
+                  className={`flow-link ${link.tone || "shared"} ${link.dashed ? "dashed" : ""} ${link.muted ? "muted-link" : ""}`}
+                  strokeWidth={width}
+                />
+                <title>{`${link.label}: ${formatChf(link.amount)}`}</title>
+              </g>
+            );
+          })}
+        </g>
+        <g className="flow-nodes">
+          {nodes.map((node) => {
+            const isSelected = selectedId === node.id;
+            const lines = splitLabel(node.label);
+            return (
+              <g
+                key={node.id}
+                className={`flow-node ${node.kind || ""} ${isSelected ? "selected" : ""}`}
+                role="button"
+                tabIndex="0"
+                onClick={() => select(node.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") select(node.id);
+                }}
+              >
+                <rect x={node.x} y={node.y} width={node.w} height={node.h} rx="12" />
+                <text x={node.x + 14} y={node.y + 20} className="flow-node-title">
+                  {lines.map((line, index) => (
+                    <tspan key={line} x={node.x + 14} dy={index === 0 ? 0 : 15}>
+                      {line}
+                    </tspan>
+                  ))}
+                </text>
+                <text x={node.x + 14} y={node.y + node.h - 12} className="flow-node-value">
+                  {nodeAmount(node) || node.detail || ""}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+      <div className="flow-legend">
+        <span><i className="legend-line vehicle" />Fahrzeug</span>
+        <span><i className="legend-line living" />Nächte</span>
+        <span><i className="legend-line work" />Arbeit intern</span>
+        <span><i className="legend-line history" />Historisch pausiert</span>
+      </div>
+    </div>
+  );
+}
+
+function MoneyRowsTable({ rows = [], emptyText = "Keine Zeilen." }) {
+  return (
+    <div className="table-wrap calculation-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Bereich</th>
+            <th>Datum</th>
+            <th>Quelle</th>
+            <th>Person</th>
+            <th>Beschreibung</th>
+            <th>Rechnung</th>
+            <th>Betrag</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan="7" className="empty-cell">
+                {emptyText}
+              </td>
+            </tr>
+          ) : (
+            rows.map((row, index) => (
+              <tr key={`${row.label}-${row.detail || row.description}-${index}`}>
+                <td>{row.label}</td>
+                <td>{row.date || "-"}</td>
+                <td>{row.source || "-"}</td>
+                <td>{row.person || "-"}</td>
+                <td className="notes-cell">{row.description || "-"}</td>
+                <td className="notes-cell">{row.formula || row.detail || "-"}</td>
+                <td>{formatSignedChf(row.amount)}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PaymentTable({ projection, recordedPaid }) {
+  const rows = projection.suggestedSettlements || [];
+  return (
+    <section className="card full-span payment-card">
+      <header>
+        <p className="eyebrow">Wer zahlt jetzt?</p>
+        <h2>Direkte Zahlungsvorschläge</h2>
+      </header>
+      <div className="payment-summary">
+        <span>Vorschläge: {rows.length}</span>
+        <span>Eingetragen bezahlt: {formatChf(recordedPaid)}</span>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Von</th>
+              <th>An</th>
+              <th>Betrag</th>
+              <th>Grund</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan="4" className="empty-cell">
+                  Keine Zahlungsvorschläge für diese Vorschau.
+                </td>
+              </tr>
+            ) : (
+              rows.map((row) => (
+                <tr key={`${row.from_person}-${row.to_person}-${row.amount_chf}`}>
+                  <td>{formatParty(row.from_person)}</td>
+                  <td>{formatParty(row.to_person)}</td>
+                  <td>{formatChf(row.amount_chf)}</td>
+                  <td>{reasonLabel(row.reason)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function Rechenblatt({ model }) {
+  return (
+    <div className="accounting-tab-grid">
+      <section>
+        <h3>Übersicht</h3>
+        <MoneyRowsTable rows={model.overviewRows} />
+      </section>
+      <section>
+        <h3>Personen</h3>
+        <div className="table-wrap calculation-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Person</th>
+                <th>KM</th>
+                <th>Nächte</th>
+                <th>Fahrzeug</th>
+                <th>Nächte/Arbeit</th>
+                <th>Arbeit genutzt</th>
+                <th>Arbeit offen</th>
+                <th>Saldo</th>
+                <th>Rechnung</th>
+              </tr>
+            </thead>
+            <tbody>
+              {model.personRows.map((row) => (
+                <tr key={row.person}>
+                  <td>{row.person}</td>
+                  <td>{formatNumber(row.km)}</td>
+                  <td>{formatNumber(row.nights)}</td>
+                  <td>{formatChf(row.vehicleFunding)}</td>
+                  <td>{formatChf(row.livingFunding)}</td>
+                  <td>{formatChf(row.workUsed)}</td>
+                  <td>{formatChf(row.workCarried)}</td>
+                  <td>{formatSignedChf(row.balance)}</td>
+                  <td className="notes-cell">{row.formula}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section>
+        <h3>Fahrzeug: Gas, Unterhalt, Gebühren</h3>
+        <MoneyRowsTable rows={model.vehicleCostRows} emptyText="Keine Fahrzeugkosten in diesem Zeitraum." />
+      </section>
+      <section>
+        <h3>Nächte & Arbeit</h3>
+        <MoneyRowsTable
+          rows={model.personRows.flatMap((row) => [
+            {
+              label: "Nächte-Anteil",
+              person: row.person,
+              amount: row.livingFunding,
+              formula: `${row.nights.toFixed(1)} Nächte × Nacht-Rate ÷ 2`,
+            },
+            {
+              label: "Arbeit genutzt",
+              person: row.person,
+              amount: row.workUsed,
+              formula: `min(Arbeitsgutschrift ${formatChf(row.workCredit)}, Nächte-Anteil ${formatChf(row.livingFunding)})`,
+            },
+            {
+              label: "Arbeit offen",
+              person: row.person,
+              amount: row.workCarried,
+              formula: "Carry-forward, keine automatische Auszahlung",
+            },
+          ])}
+        />
+      </section>
+      <section>
+        <h3>Wohn-/Ausbaukosten</h3>
+        <MoneyRowsTable rows={model.livingCostRows} emptyText="Keine Wohn-/Arbeitskosten in diesem Zeitraum." />
+      </section>
+    </div>
+  );
+}
+
+function Drilldown({ detail }) {
+  return (
+    <div className="drilldown-panel">
+      <div className="drilldown-head">
+        <div>
+          <h3>{detail.title}</h3>
+          <p className="subtitle">{detail.subtitle}</p>
+        </div>
+        <strong>{formatSignedChf(detail.amount)}</strong>
+      </div>
+      <MoneyRowsTable rows={detail.rows || []} emptyText="Für diese Auswahl gibt es keine Einzelzeilen." />
+    </div>
+  );
+}
+
+function Formeln({ model }) {
+  return (
+    <div className="formula-grid">
+      {model.formulaRows.map((row) => (
+        <article className="formula-card" key={row.title}>
+          <p className="summary-label">{row.title}</p>
+          <h3>{row.formula}</h3>
+          <p>{row.example}</p>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function AuditDetails({ projection, monthlyCloses }) {
+  const visibleMonthlyCloses = monthlyCloses.slice(0, 12);
+  return (
+    <details className="card full-span audit-details">
+      <summary>Audit und alte Tabellen</summary>
+      <div className="audit-grid">
+        <section>
+          <h3>Doppelte Buchhaltung Buckets</h3>
+          <div className="chart-list">
+            {Object.entries(projection.bucketTotals)
+              .filter(([, amount]) => amount > 0)
+              .map(([bucket, amount]) => (
+                <div className="chart-row" key={bucket}>
+                  <span className="chart-month">{accountingBucketLabelMap[bucket] || bucket}</span>
+                  <div className="chart-track">
+                    <div className="chart-bar" style={{ width: `${Math.min(100, Math.max(8, amount / 20))}%` }} />
+                  </div>
+                  <span className="chart-value">{formatChf(amount)}</span>
+                </div>
+              ))}
+          </div>
+          <p className="subtitle">
+            Zeilen: {formatSourceCounts(projection.sourceCounts)}. Historisch: {projection.historical.rows} Zeilen /{" "}
+            {formatChf(projection.historical.investment_chf)}.
+          </p>
+        </section>
+        <section>
+          <h3>Geschlossene Monate</h3>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Monat</th>
+                  <th>Rest</th>
+                  <th>Kosten</th>
+                  <th>Reserve</th>
+                  <th>Zeilen</th>
+                  <th>Zahlungen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleMonthlyCloses.length === 0 ? (
+                  <tr>
+                    <td colSpan="6" className="empty-cell">
+                      Noch keine geschlossenen Monate.
+                    </td>
+                  </tr>
+                ) : (
+                  visibleMonthlyCloses.map((close) => (
+                    <tr key={close.id || close.period}>
+                      <td>{close.period}</td>
+                      <td>{formatChf(close.totals.shared_pot_balance_chf)}</td>
+                      <td>{formatChf(close.totals.current_costs_chf)}</td>
+                      <td>{formatChf(close.totals.reserve_allocation_chf)}</td>
+                      <td>{formatClosedSourceCounts(close.entryCounts)}</td>
+                      <td>{formatSettlementSummary(close.suggestedSettlements)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </details>
+  );
+}
+
 export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trips = [], fuelEntries = [], workEntries = [], people = accountingPeople }) {
   const [settings, setSettings] = useState(defaultAccountingSettings);
   const [periodMode, setPeriodMode] = useState("current_open");
@@ -61,10 +464,12 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
   const [apiProjection, setApiProjection] = useState(null);
   const [monthlyCloses, setMonthlyCloses] = useState([]);
   const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
+  const [selectedFlowId, setSelectedFlowId] = useState("overview");
+  const [activeDetailTab, setActiveDetailTab] = useState("rechenblatt");
   const [status, setStatus] = useState({ state: "idle", message: "" });
   const period = periodMode === "current_open" ? accountingCurrentOpenPeriod : monthPeriod;
   const isCurrentOpenPeriod = period === accountingCurrentOpenPeriod;
-  const periodLabel = isCurrentOpenPeriod ? `Current open since ${accountingCurrentOpenStartDate}` : period;
+  const periodLabel = isCurrentOpenPeriod ? `Offen seit ${accountingCurrentOpenStartDate}` : period;
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -77,7 +482,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
           setSettings(normalizeAccountingSettings(payload));
         }
       } catch (_error) {
-        if (!isCancelled) setStatus({ state: "error", message: "Could not load accounting settings." });
+        if (!isCancelled) setStatus({ state: "error", message: "Accounting-Regeln konnten nicht geladen werden." });
       }
     };
     loadSettings();
@@ -119,7 +524,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
           setApiProjection(null);
         }
       } catch (_error) {
-        if (!isCancelled) setStatus({ state: "error", message: "Could not load accounting context." });
+        if (!isCancelled) setStatus({ state: "error", message: "Accounting-Kontext konnte nicht geladen werden." });
       }
     };
     loadAccountingContext();
@@ -147,19 +552,30 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
   );
   const projection = apiProjectionMatchesSettings ? apiProjection : localProjection;
   const previewUsesUnsavedSettings = Boolean(apiProjection && apiProjection.period === period && !apiProjectionMatchesSettings);
-
-  const historicalRows = useMemo(() => costEntries.filter((entry) => entry.historical || entry.historical_only), [costEntries]);
-  const visibleMonthlyCloses = monthlyCloses.slice(0, 12);
+  const flowModel = useMemo(
+    () => buildAccountingFlowModel({ projection, costEntries, fuelEntries, people, period, settings }),
+    [costEntries, flowModelKey(projection), fuelEntries, people, period, settings],
+  );
+  const selectedDetail = flowModel.detailItems[selectedFlowId] || flowModel.detailItems.overview;
   const existingClose = isCurrentOpenPeriod ? null : monthlyCloses.find((close) => close.period === period);
   const closeButtonLabel = isCurrentOpenPeriod
-    ? "Choose a month to close"
+    ? "Monat wählen zum Schliessen"
     : existingClose
-      ? "Month already closed"
+      ? "Monat schon geschlossen"
       : previewUsesUnsavedSettings
-        ? "Save settings first"
-        : "Save monthly close";
-  const vehiclePot = projection.currentPots?.vehicle || {};
-  const livingWorkPot = projection.currentPots?.livingWork || {};
+        ? "Regeln zuerst speichern"
+        : "Monat speichern";
+
+  useEffect(() => {
+    if (!flowModel.detailItems[selectedFlowId]) {
+      setSelectedFlowId("overview");
+    }
+  }, [flowModel.detailItems, selectedFlowId]);
+
+  const handleSelectFlow = (id) => {
+    setSelectedFlowId(id);
+    setActiveDetailTab("drilldown");
+  };
 
   const handleSettingChange = (event) => {
     const { name, value } = event.target;
@@ -168,10 +584,10 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
 
   const handleSaveSettings = async () => {
     if (!apiBaseUrl) {
-      setStatus({ state: "error", message: "Missing API URL. Settings are only previewed locally." });
+      setStatus({ state: "error", message: "API URL fehlt. Regeln sind nur lokale Vorschau." });
       return;
     }
-    setStatus({ state: "loading", message: "Saving accounting settings..." });
+    setStatus({ state: "loading", message: "Accounting-Regeln werden gespeichert..." });
     try {
       const response = await fetch(`${apiBaseUrl}/accounting/settings`, {
         method: "PUT",
@@ -180,36 +596,36 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setStatus({ state: "error", message: payload.error || "Could not save accounting settings." });
+        setStatus({ state: "error", message: payload.error || "Accounting-Regeln konnten nicht gespeichert werden." });
         return;
       }
       setSettings(normalizeAccountingSettings(payload));
       setApiProjection(null);
       setPreviewRefreshKey((current) => current + 1);
-      setStatus({ state: "success", message: "Accounting settings saved." });
+      setStatus({ state: "success", message: "Accounting-Regeln gespeichert." });
     } catch (_error) {
-      setStatus({ state: "error", message: "Network error while saving accounting settings." });
+      setStatus({ state: "error", message: "Netzwerkfehler beim Speichern der Accounting-Regeln." });
     }
   };
 
   const handleSaveMonthlyClose = async () => {
     if (!apiBaseUrl) {
-      setStatus({ state: "error", message: "Missing API URL. Monthly close can only be previewed locally." });
+      setStatus({ state: "error", message: "API URL fehlt. Monatsabschluss ist nur mit Backend möglich." });
       return;
     }
     if (isCurrentOpenPeriod) {
-      setStatus({ state: "error", message: "Switch to a month before saving a monthly close." });
+      setStatus({ state: "error", message: "Bitte einen einzelnen Monat wählen." });
       return;
     }
     if (existingClose) {
-      setStatus({ state: "error", message: "This month is already closed. Create an adjustment entry instead of overwriting it." });
+      setStatus({ state: "error", message: "Dieser Monat ist schon geschlossen. Korrekturen als neue Anpassung erfassen." });
       return;
     }
     if (previewUsesUnsavedSettings) {
-      setStatus({ state: "error", message: "Save accounting settings before closing this month." });
+      setStatus({ state: "error", message: "Regeln speichern, bevor der Monat geschlossen wird." });
       return;
     }
-    setStatus({ state: "loading", message: "Saving monthly close..." });
+    setStatus({ state: "loading", message: "Monat wird gespeichert..." });
     try {
       const response = await fetch(`${apiBaseUrl}/accounting/monthly-closes`, {
         method: "POST",
@@ -218,367 +634,143 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setStatus({ state: "error", message: payload.error || "Could not save monthly close." });
+        setStatus({ state: "error", message: payload.error || "Monat konnte nicht gespeichert werden." });
         return;
       }
       const savedClose = normalizeMonthlyCloseFromApi(payload, { people });
       if (savedClose) {
         setMonthlyCloses((current) => sortMonthlyCloses([savedClose, ...current.filter((close) => close.period !== savedClose.period)]));
       }
-      setStatus({ state: "success", message: `Closed ${period}.` });
+      setStatus({ state: "success", message: `${period} gespeichert.` });
     } catch (_error) {
-      setStatus({ state: "error", message: "Network error while saving monthly close." });
+      setStatus({ state: "error", message: "Netzwerkfehler beim Speichern des Monats." });
     }
   };
 
   return (
-    <div className="panel-grid">
-      <section className="card full-span">
-        <header>
-          <p className="eyebrow">Doppelte Buchhaltung</p>
-          <h1>Private van accounting</h1>
-          <p className="subtitle">Track the open period with a vehicle pot, a nights/work pot, and historical Ausgleich kept separate.</p>
+    <div className="panel-grid accounting-flow-page">
+      <section className="card full-span flow-overview-card">
+        <header className="flow-header">
+          <div>
+            <p className="eyebrow">Doppelte Buchhaltung</p>
+            <h1>Übersicht: wohin fliesst was?</h1>
+            <p className="subtitle">{periodLabel}. Historischer Ausgleich bleibt separat.</p>
+          </div>
+          <div className="flow-kpi-strip">
+            <span><strong>{formatChf(flowModel.totals.sollZufluss)}</strong> Soll-Zufluss</span>
+            <span><strong>{formatChf(flowModel.totals.currentCostTotal)}</strong> aktuelle Kosten</span>
+            <span><strong>{formatSignedChf(flowModel.totals.potBalance)}</strong> Rest</span>
+          </div>
         </header>
         {status.state !== "idle" && <div className={`status ${status.state}`}>{status.message}</div>}
-        <div className="inline-grid four-col">
+        <div className="flow-controls">
           <label className="field">
-            <span>View</span>
+            <span>Zeitraum</span>
             <select value={periodMode} onChange={(event) => setPeriodMode(event.target.value)}>
-              <option value="current_open">Current open period</option>
-              <option value="month">Single month</option>
+              <option value="current_open">Offener Zeitraum</option>
+              <option value="month">Einzelner Monat</option>
             </select>
           </label>
           {periodMode === "month" && (
             <label className="field">
-              <span>Month</span>
+              <span>Monat</span>
               <input type="month" value={monthPeriod} onChange={(event) => setMonthPeriod(event.target.value)} />
             </label>
           )}
-          <label className="field">
-            <span>Km rate</span>
-            <input name="km_rate_chf" type="number" step="0.01" value={settings.km_rate_chf} onChange={handleSettingChange} />
-          </label>
-          <label className="field">
-            <span>Night rate</span>
-            <input name="night_rate_chf" type="number" step="0.01" value={settings.night_rate_chf} onChange={handleSettingChange} />
-          </label>
-          <label className="field">
-            <span>Workday credit</span>
-            <input name="workday_rate_chf" type="number" step="0.01" value={settings.workday_rate_chf} onChange={handleSettingChange} />
-          </label>
-          <label className="field">
-            <span>Monthly payment</span>
-            <input name="monthly_payment_chf" type="number" step="0.01" value={settings.monthly_payment_chf} onChange={handleSettingChange} />
-          </label>
-          <label className="field">
-            <span>Reserve target</span>
-            <input name="reserve_target_chf" type="number" step="0.01" value={settings.reserve_target_chf} onChange={handleSettingChange} />
-          </label>
-          <label className="field">
-            <span>Surplus to reserve (%)</span>
-            <input name="surplus_reserve_percent" type="number" step="1" value={settings.surplus_reserve_percent} onChange={handleSettingChange} />
-          </label>
-          <label className="field">
-            <span>Surplus to history (%)</span>
-            <input
-              name="surplus_historical_repayment_percent"
-              type="number"
-              step="1"
-              value={settings.surplus_historical_repayment_percent}
-              onChange={handleSettingChange}
-            />
-          </label>
+          <div className="form-actions flow-actions">
+            <button
+              className="cancel"
+              type="button"
+              onClick={handleSaveMonthlyClose}
+              disabled={Boolean(isCurrentOpenPeriod || existingClose || previewUsesUnsavedSettings)}
+            >
+              {closeButtonLabel}
+            </button>
+          </div>
         </div>
-        <div className="form-actions">
-          <button className="submit" type="button" onClick={handleSaveSettings}>
-            Save settings
-          </button>
-          <button
-            className="cancel"
-            type="button"
-            onClick={handleSaveMonthlyClose}
-            disabled={Boolean(isCurrentOpenPeriod || existingClose || previewUsesUnsavedSettings)}
-          >
-            {closeButtonLabel}
-          </button>
-        </div>
-        {previewUsesUnsavedSettings && <p className="subtitle">Local preview with unsaved settings. Save settings before closing {period}.</p>}
-        {existingClose && (
-          <p className="subtitle">
-            Saved close for {period}: {formatClosedSourceCounts(existingClose.entryCounts)}.
-          </p>
-        )}
+        <details className="rules-panel">
+          <summary>Regeln</summary>
+          <div className="inline-grid four-col compact-settings">
+            <label className="field">
+              <span>Km-Rate</span>
+              <input name="km_rate_chf" type="number" step="0.01" value={settings.km_rate_chf} onChange={handleSettingChange} />
+            </label>
+            <label className="field">
+              <span>Nacht-Rate</span>
+              <input name="night_rate_chf" type="number" step="0.01" value={settings.night_rate_chf} onChange={handleSettingChange} />
+            </label>
+            <label className="field">
+              <span>Arbeitstag</span>
+              <input name="workday_rate_chf" type="number" step="0.01" value={settings.workday_rate_chf} onChange={handleSettingChange} />
+            </label>
+            <label className="field">
+              <span>Monatszahlung</span>
+              <input name="monthly_payment_chf" type="number" step="0.01" value={settings.monthly_payment_chf} onChange={handleSettingChange} />
+            </label>
+            <label className="field">
+              <span>Reserve-Ziel</span>
+              <input name="reserve_target_chf" type="number" step="0.01" value={settings.reserve_target_chf} onChange={handleSettingChange} />
+            </label>
+            <label className="field">
+              <span>Überschuss Reserve (%)</span>
+              <input name="surplus_reserve_percent" type="number" step="1" value={settings.surplus_reserve_percent} onChange={handleSettingChange} />
+            </label>
+            <label className="field">
+              <span>Überschuss Historisch (%)</span>
+              <input
+                name="surplus_historical_repayment_percent"
+                type="number"
+                step="1"
+                value={settings.surplus_historical_repayment_percent}
+                onChange={handleSettingChange}
+              />
+            </label>
+            <div className="toggle-field">
+              <button className="submit" type="button" onClick={handleSaveSettings}>
+                Regeln speichern
+              </button>
+            </div>
+          </div>
+          {previewUsesUnsavedSettings && <p className="subtitle">Lokale Vorschau mit ungespeicherten Regeln.</p>}
+          {existingClose && <p className="subtitle">Gespeicherter Abschluss für {period}: {formatClosedSourceCounts(existingClose.entryCounts)}.</p>}
+        </details>
+        <FlowChart model={flowModel} selectedId={selectedFlowId} onSelect={handleSelectFlow} />
       </section>
 
-      <section className="card table-card">
+      <PaymentTable projection={projection} recordedPaid={flowModel.totals.recordedPaid} />
+
+      <section className="card full-span table-card accounting-detail-card">
         <header>
-          <p className="eyebrow">Shared konto</p>
-          <h2>{periodLabel}</h2>
+          <p className="eyebrow">Details</p>
+          <h2>Rechnung nachvollziehen</h2>
         </header>
-        <div className="summary-grid compact-summary-grid">
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Bank inflow</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.inflow_chf)}</p>
-            <p className="summary-hint">Payments, net usage, and income.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Monthly due</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.contributions_due_chf)}</p>
-            <p className="summary-hint">Expected member payments.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Recorded paid</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.contributions_paid_chf)}</p>
-            <p className="summary-hint">Transfers entered this month.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Current costs</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.current_costs_chf)}</p>
-            <p className="summary-hint">Vehicle and living costs before reserve.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Gas costs</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.fuel_costs_chf)}</p>
-            <p className="summary-hint">Pulled from the Gas tab.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Reserve</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.reserve_allocation_chf)}</p>
-            <p className="summary-hint">From surplus after current costs.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Historical repayment</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.historical_repayment_chf)}</p>
-            <p className="summary-hint">Paused; shown as Ausgleich below.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Pot balance</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.balance_chf)}</p>
-            <p className="summary-hint">Cash left after current policy.</p>
-          </article>
+        <div className="detail-tabs" role="tablist" aria-label="Accounting detail views">
+          {[
+            ["rechenblatt", "Rechenblatt"],
+            ["drilldown", "Drilldown"],
+            ["formeln", "Formeln"],
+          ].map(([id, label]) => (
+            <button key={id} type="button" className={`detail-tab ${activeDetailTab === id ? "active" : ""}`} onClick={() => setActiveDetailTab(id)}>
+              {label}
+            </button>
+          ))}
         </div>
+        {activeDetailTab === "rechenblatt" && <Rechenblatt model={flowModel} />}
+        {activeDetailTab === "drilldown" && <Drilldown detail={selectedDetail} />}
+        {activeDetailTab === "formeln" && <Formeln model={flowModel} />}
       </section>
 
-      <section className="card table-card">
-        <header>
-          <p className="eyebrow">Vehicle running</p>
-          <h2>KM, gas, insurance, maintenance</h2>
-        </header>
-        <div className="summary-grid compact-summary-grid">
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Usage funding</p>
-            <p className="summary-value">{formatChf(vehiclePot.usage_funding_chf)}</p>
-            <p className="summary-hint">All km plus half of nights.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Vehicle costs</p>
-            <p className="summary-value">{formatChf(vehiclePot.costs_chf)}</p>
-            <p className="summary-hint">Gas, insurance, road fees, repairs.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Vehicle balance</p>
-            <p className="summary-value">{formatChf(vehiclePot.balance_chf)}</p>
-            <p className="summary-hint">{vehiclePot.deficit_chf > 0 ? `${formatChf(vehiclePot.deficit_chf)} needs shared bank cover.` : "Covered by usage."}</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Gas from tab</p>
-            <p className="summary-value">{formatChf(vehiclePot.fuel_costs_chf)}</p>
-            <p className="summary-hint">Not duplicated in Costs.</p>
-          </article>
-        </div>
-      </section>
-
-      <section className="card table-card">
-        <header>
-          <p className="eyebrow">Nights & work</p>
-          <h2>Overnight usage and credits</h2>
-        </header>
-        <div className="summary-grid compact-summary-grid">
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Night funding</p>
-            <p className="summary-value">{formatChf(livingWorkPot.night_funding_chf)}</p>
-            <p className="summary-hint">Half of night charges.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Work used</p>
-            <p className="summary-value">{formatChf(livingWorkPot.work_offset_chf)}</p>
-            <p className="summary-hint">Offsets night charges first.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Work carried</p>
-            <p className="summary-value">{formatChf(livingWorkPot.work_carryforward_chf)}</p>
-            <p className="summary-hint">Value kept for future offsets.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Living balance</p>
-            <p className="summary-value">{formatChf(livingWorkPot.balance_chf)}</p>
-            <p className="summary-hint">Nights/work pot only.</p>
-          </article>
-        </div>
-      </section>
-
-      <section className="card table-card">
-        <header>
-          <p className="eyebrow">People</p>
-          <h2>Usage, work, cash balance</h2>
-        </header>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Person</th>
-                <th>Km</th>
-                <th>Nights</th>
-                <th>Usage</th>
-                <th>Work used</th>
-                <th>Work carried</th>
-                <th>Balance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {people.map((person) => (
-                <tr key={person}>
-                  <td>{person}</td>
-                  <td>{projection.kmByPerson[person].toFixed(1)}</td>
-                  <td>{projection.nightsByPerson[person].toFixed(1)}</td>
-                  <td>{formatChf(projection.usageByPerson[person])}</td>
-                  <td>{formatChf(projection.workOffsetsByPerson?.[person])}</td>
-                  <td>{formatChf(projection.workCarryForwardByPerson?.[person])}</td>
-                  <td>{formatChf(projection.personBalances[person])}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="card table-card">
-        <header>
-          <p className="eyebrow">Settlement</p>
-          <h2>Suggested payments</h2>
-        </header>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>From</th>
-                <th>To</th>
-                <th>Amount</th>
-                <th>Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {projection.suggestedSettlements.length === 0 ? (
-                <tr>
-                  <td colSpan="4" className="empty-cell">
-                    No suggested payments for this preview.
-                  </td>
-                </tr>
-              ) : (
-                projection.suggestedSettlements.map((row) => (
-                  <tr key={`${row.from_person}-${row.to_person}-${row.amount_chf}`}>
-                    <td>{formatParty(row.from_person)}</td>
-                    <td>{formatParty(row.to_person)}</td>
-                    <td>{formatChf(row.amount_chf)}</td>
-                    <td>{row.reason}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="card full-span table-card">
-        <header>
-          <p className="eyebrow">Historical Ausgleich</p>
-          <h2>Frozen backlog</h2>
-        </header>
-        <div className="summary-grid compact-summary-grid">
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Historical basis</p>
-            <p className="summary-value">{formatChf(projection.historical.investment_chf)}</p>
-            <p className="summary-hint">Imported audit/investment rows.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Historical rows</p>
-            <p className="summary-value">{projection.historical.rows}</p>
-            <p className="summary-hint">Kept out of current running costs.</p>
-          </article>
-          <article className="summary-card compact-summary-card">
-            <p className="summary-label">Current repayment</p>
-            <p className="summary-value">{formatChf(projection.sharedPot.historical_repayment_chf)}</p>
-            <p className="summary-hint">Paused until you decide the Ausgleich rule.</p>
-          </article>
-        </div>
-      </section>
-
-      <section className="card full-span table-card">
-        <header>
-          <p className="eyebrow">Audit</p>
-          <h2>Double-entry buckets</h2>
-        </header>
-        <div className="chart-list">
-          {Object.entries(projection.bucketTotals)
-            .filter(([, amount]) => amount > 0)
-            .map(([bucket, amount]) => (
-              <div className="chart-row" key={bucket}>
-                <span className="chart-month">{accountingBucketLabelMap[bucket] || bucket}</span>
-                <div className="chart-track">
-                  <div className="chart-bar" style={{ width: `${Math.min(100, Math.max(8, amount / 20))}%` }} />
-                </div>
-                <span className="chart-value">{formatChf(amount)}</span>
-              </div>
-            ))}
-        </div>
-        <p className="subtitle">
-          Rows used: {formatSourceCounts(projection.sourceCounts)}. Historical audit rows loaded: {historicalRows.length}. Historical investment basis:{" "}
-          {formatChf(projection.historical.investment_chf)}.
-        </p>
-      </section>
-
-      <section className="card full-span table-card">
-        <header>
-          <p className="eyebrow">Closed months</p>
-          <h2>Monthly snapshots</h2>
-        </header>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Month</th>
-                <th>Pot balance</th>
-                <th>Current costs</th>
-                <th>Reserve</th>
-                <th>History</th>
-                <th>Rows</th>
-                <th>Suggested payments</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleMonthlyCloses.length === 0 ? (
-                <tr>
-                  <td colSpan="7" className="empty-cell">
-                    No closed months yet.
-                  </td>
-                </tr>
-              ) : (
-                visibleMonthlyCloses.map((close) => (
-                  <tr key={close.id || close.period}>
-                    <td>{close.period}</td>
-                    <td>{formatChf(close.totals.shared_pot_balance_chf)}</td>
-                    <td>{formatChf(close.totals.current_costs_chf)}</td>
-                    <td>{formatChf(close.totals.reserve_allocation_chf)}</td>
-                    <td>{formatChf(close.totals.historical_repayment_chf)}</td>
-                    <td>{formatClosedSourceCounts(close.entryCounts)}</td>
-                    <td>{formatSettlementSummary(close.suggestedSettlements)}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <AuditDetails projection={projection} monthlyCloses={monthlyCloses} />
     </div>
   );
 }
+
+const flowModelKey = (projection = {}) =>
+  JSON.stringify({
+    period: projection.period,
+    sharedPot: projection.sharedPot,
+    currentPots: projection.currentPots,
+    personBalances: projection.personBalances,
+    usageByPerson: projection.usageByPerson,
+    workOffsetsByPerson: projection.workOffsetsByPerson,
+  });
