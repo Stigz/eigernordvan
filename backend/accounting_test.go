@@ -17,18 +17,22 @@ type accountingProjectionFixture struct {
 	WorkEntries []workEntryPayload        `json:"work_entries"`
 	CostEntries []costEntryPayload        `json:"cost_entries"`
 	Expected    struct {
-		MonthlyContributionsCHF float64                       `json:"monthly_contributions_chf"`
-		SharedPot               map[string]float64            `json:"shared_pot"`
-		UsageByPerson           map[string]float64            `json:"usage_by_person"`
-		WorkCreditsByPerson     map[string]float64            `json:"work_credits_by_person"`
-		KMByPerson              map[string]float64            `json:"km_by_person"`
-		NightsByPerson          map[string]float64            `json:"nights_by_person"`
-		BucketTotals            map[string]float64            `json:"bucket_totals"`
-		PersonBalances          map[string]float64            `json:"person_balances"`
-		SettlementBalances      map[string]float64            `json:"settlement_balances"`
-		SuggestedSettlements    []settlementSuggestionPayload `json:"suggested_settlements"`
-		SourceCounts            map[string]int                `json:"source_counts"`
-		Historical              struct {
+		MonthlyContributionsCHF  float64                       `json:"monthly_contributions_chf"`
+		SharedPot                map[string]float64            `json:"shared_pot"`
+		UsageByPerson            map[string]float64            `json:"usage_by_person"`
+		NetUsageByPerson         map[string]float64            `json:"net_usage_by_person"`
+		WorkCreditsByPerson      map[string]float64            `json:"work_credits_by_person"`
+		WorkOffsetsByPerson      map[string]float64            `json:"work_offsets_by_person"`
+		WorkCarryForwardByPerson map[string]float64            `json:"work_carryforward_by_person"`
+		KMByPerson               map[string]float64            `json:"km_by_person"`
+		NightsByPerson           map[string]float64            `json:"nights_by_person"`
+		CurrentPots              map[string]map[string]float64 `json:"current_pots"`
+		BucketTotals             map[string]float64            `json:"bucket_totals"`
+		PersonBalances           map[string]float64            `json:"person_balances"`
+		SettlementBalances       map[string]float64            `json:"settlement_balances"`
+		SuggestedSettlements     []settlementSuggestionPayload `json:"suggested_settlements"`
+		SourceCounts             map[string]int                `json:"source_counts"`
+		Historical               struct {
 			InvestmentCHF float64 `json:"investment_chf"`
 			Rows          int     `json:"rows"`
 		} `json:"historical"`
@@ -191,17 +195,25 @@ func TestBuildAccountingProjectionUsesStoredInputs(t *testing.T) {
 	if projection.MonthlyContributionsCHF != 100 ||
 		projection.UsageByPerson["Nic"] != 60 ||
 		projection.UsageByPerson["Kayla"] != 100 ||
+		projection.NetUsageByPerson["Kayla"] != 100 ||
 		projection.WorkCreditsByPerson["Nic"] != 50 ||
+		projection.WorkCarryForwardByPerson["Nic"] != 50 ||
 		projection.SharedPot.CurrentCostsCHF != 160 ||
 		projection.SharedPot.FuelCostsCHF != 40 {
 		t.Fatalf("unexpected projection totals: %+v", projection)
 	}
-	if projection.SharedPot.ReserveAllocationCHF != 35 ||
-		projection.SharedPot.HistoricalRepaymentCHF != 15 ||
-		projection.SharedPot.BalanceCHF != 0 {
+	if projection.CurrentPots.Vehicle.UsageFundingCHF != 110 ||
+		projection.CurrentPots.Vehicle.CostsCHF != 160 ||
+		projection.CurrentPots.Vehicle.DeficitCHF != 50 ||
+		projection.CurrentPots.LivingWork.WorkCarryForwardCHF != 50 {
+		t.Fatalf("unexpected current pots: %+v", projection.CurrentPots)
+	}
+	if projection.SharedPot.ReserveAllocationCHF != 70 ||
+		projection.SharedPot.HistoricalRepaymentCHF != 0 ||
+		projection.SharedPot.BalanceCHF != 30 {
 		t.Fatalf("unexpected shared pot policy result: %+v", projection.SharedPot)
 	}
-	if projection.PersonBalances["Nic"] != 60 || projection.PersonBalances["Kayla"] != -60 {
+	if projection.PersonBalances["Nic"] != 10 || projection.PersonBalances["Kayla"] != -60 {
 		t.Fatalf("unexpected person balances: %+v", projection.PersonBalances)
 	}
 	if projection.SourceCounts.CostEntries != 2 ||
@@ -221,7 +233,7 @@ func TestBuildAccountingProjectionUsesStoredInputs(t *testing.T) {
 		projection.SuggestedSettlements[0].AmountCHF != 60 ||
 		projection.SuggestedSettlements[1].FromPerson != "shared_pot" ||
 		projection.SuggestedSettlements[1].ToPerson != "Nic" ||
-		projection.SuggestedSettlements[1].AmountCHF != 60 {
+		projection.SuggestedSettlements[1].AmountCHF != 10 {
 		t.Fatalf("unexpected suggested settlements: %+v", projection.SuggestedSettlements)
 	}
 }
@@ -247,9 +259,15 @@ func TestBuildAccountingProjectionMatchesSharedFixture(t *testing.T) {
 	}
 	assertFloatMapSubset(t, "shared pot", projectionSharedPotMap(projection.SharedPot), fixture.Expected.SharedPot)
 	assertFloatMapSubset(t, "usage by person", projection.UsageByPerson, fixture.Expected.UsageByPerson)
+	assertFloatMapSubset(t, "net usage by person", projection.NetUsageByPerson, fixture.Expected.NetUsageByPerson)
 	assertFloatMapSubset(t, "work credits by person", projection.WorkCreditsByPerson, fixture.Expected.WorkCreditsByPerson)
+	assertFloatMapSubset(t, "work offsets by person", projection.WorkOffsetsByPerson, fixture.Expected.WorkOffsetsByPerson)
+	assertFloatMapSubset(t, "work carryforward by person", projection.WorkCarryForwardByPerson, fixture.Expected.WorkCarryForwardByPerson)
 	assertFloatMapSubset(t, "km by person", projection.KMByPerson, fixture.Expected.KMByPerson)
 	assertFloatMapSubset(t, "nights by person", projection.NightsByPerson, fixture.Expected.NightsByPerson)
+	for potName, expectedPot := range fixture.Expected.CurrentPots {
+		assertFloatMapSubset(t, "current pot "+potName, projectionCurrentPotMap(projection.CurrentPots, potName), expectedPot)
+	}
 	assertFloatMapSubset(t, "bucket totals", projection.BucketTotals, fixture.Expected.BucketTotals)
 	assertFloatMapSubset(t, "person balances", projection.PersonBalances, fixture.Expected.PersonBalances)
 	assertFloatMapSubset(t, "settlement balances", projection.SettlementBalances, fixture.Expected.SettlementBalances)
@@ -640,5 +658,27 @@ func projectionSharedPotMap(sharedPot accountingSharedPotProjection) map[string]
 		"reserve_allocation_chf":   sharedPot.ReserveAllocationCHF,
 		"historical_repayment_chf": sharedPot.HistoricalRepaymentCHF,
 		"balance_chf":              sharedPot.BalanceCHF,
+	}
+}
+
+func projectionCurrentPotMap(pots accountingCurrentPotsProjection, name string) map[string]float64 {
+	pot := pots.Vehicle
+	if name == "living_work" {
+		pot = pots.LivingWork
+	}
+	return map[string]float64{
+		"usage_funding_chf":     pot.UsageFundingCHF,
+		"costs_chf":             pot.CostsCHF,
+		"balance_chf":           pot.BalanceCHF,
+		"deficit_chf":           pot.DeficitCHF,
+		"surplus_chf":           pot.SurplusCHF,
+		"km_funding_chf":        pot.KMFundingCHF,
+		"night_funding_chf":     pot.NightFundingCHF,
+		"fuel_costs_chf":        pot.FuelCostsCHF,
+		"running_costs_chf":     pot.RunningCostsCHF,
+		"living_costs_chf":      pot.LivingCostsCHF,
+		"work_credits_chf":      pot.WorkCreditsCHF,
+		"work_offset_chf":       pot.WorkOffsetCHF,
+		"work_carryforward_chf": pot.WorkCarryForwardCHF,
 	}
 }

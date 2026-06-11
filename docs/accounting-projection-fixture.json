@@ -115,22 +115,34 @@
     "monthly_contributions_chf": 100,
     "shared_pot": {
       "inflow_chf": 560,
-      "outflow_chf": 560,
+      "outflow_chf": 440,
       "contributions_due_chf": 100,
       "contributions_paid_chf": 50,
       "usage_charges_chf": 160,
       "external_income_chf": 300,
       "current_costs_chf": 160,
       "fuel_costs_chf": 40,
-      "reserve_allocation_chf": 245,
-      "historical_repayment_chf": 105,
-      "balance_chf": 0
+      "reserve_allocation_chf": 280,
+      "historical_repayment_chf": 0,
+      "balance_chf": 120
     },
     "usage_by_person": {
       "Nic": 60,
       "Kayla": 100
     },
+    "net_usage_by_person": {
+      "Nic": 60,
+      "Kayla": 100
+    },
     "work_credits_by_person": {
+      "Nic": 50,
+      "Kayla": 0
+    },
+    "work_offsets_by_person": {
+      "Nic": 0,
+      "Kayla": 0
+    },
+    "work_carryforward_by_person": {
       "Nic": 50,
       "Kayla": 0
     },
@@ -142,6 +154,38 @@
       "Nic": 0,
       "Kayla": 2
     },
+    "current_pots": {
+      "vehicle": {
+        "usage_funding_chf": 110,
+        "costs_chf": 160,
+        "balance_chf": -50,
+        "deficit_chf": 50,
+        "surplus_chf": 0,
+        "km_funding_chf": 60,
+        "night_funding_chf": 50,
+        "fuel_costs_chf": 40,
+        "running_costs_chf": 160,
+        "living_costs_chf": 0,
+        "work_credits_chf": 0,
+        "work_offset_chf": 0,
+        "work_carryforward_chf": 0
+      },
+      "living_work": {
+        "usage_funding_chf": 50,
+        "costs_chf": 0,
+        "balance_chf": 50,
+        "deficit_chf": 0,
+        "surplus_chf": 50,
+        "km_funding_chf": 0,
+        "night_funding_chf": 50,
+        "fuel_costs_chf": 0,
+        "running_costs_chf": 0,
+        "living_costs_chf": 0,
+        "work_credits_chf": 50,
+        "work_offset_chf": 0,
+        "work_carryforward_chf": 50
+      }
+    },
     "bucket_totals": {
       "usage": 160,
       "income": 300,
@@ -150,13 +194,13 @@
       "work_credit": 50
     },
     "person_balances": {
-      "Nic": 100,
+      "Nic": 50,
       "Kayla": -100
     },
     "settlement_balances": {
-      "Nic": 100,
+      "Nic": 50,
       "Kayla": -100,
-      "shared_pot": 0
+      "shared_pot": 50
     },
     "suggested_settlements": [
       {
@@ -168,7 +212,7 @@
       {
         "from_person": "shared_pot",
         "to_person": "Nic",
-        "amount_chf": 100,
+        "amount_chf": 50,
         "reason": "Shared pot reimbursement"
       }
     ],

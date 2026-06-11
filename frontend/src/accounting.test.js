@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import {
+  accountingCurrentOpenPeriod,
   calculateAccountingProjection,
   normalizeAccountingProjectionFromApi,
   normalizeCostEntryForAccounting,
@@ -33,20 +34,67 @@ describe("calculateAccountingProjection", () => {
 
     expect(projection.usageByPerson.Nic).toBe(60);
     expect(projection.usageByPerson.Kayla).toBe(100);
+    expect(projection.netUsageByPerson.Kayla).toBe(100);
     expect(projection.kmByPerson.Nic).toBe(120);
     expect(projection.nightsByPerson.Kayla).toBe(2);
+    expect(projection.currentPots.vehicle.km_funding_chf).toBe(60);
+    expect(projection.currentPots.vehicle.night_funding_chf).toBe(50);
+    expect(projection.currentPots.livingWork.night_funding_chf).toBe(50);
   });
 
-  it("credits work by half-day increments", () => {
+  it("carries unused work credit instead of paying it out", () => {
     const projection = calculateAccountingProjection({
-      settings,
+      settings: { ...settings, monthly_payment_chf: 0 },
       people: ["Nic"],
       period: "2026-06",
       workEntries: [{ person: "Nic", month: "2026-06", days: 0.5 }],
     });
 
     expect(projection.workCreditsByPerson.Nic).toBe(50);
+    expect(projection.workOffsetsByPerson.Nic).toBe(0);
+    expect(projection.workCarryForwardByPerson.Nic).toBe(50);
     expect(projection.personBalances.Nic).toBe(0);
+    expect(projection.suggestedSettlements).toEqual([]);
+  });
+
+  it("offsets work against night charges first", () => {
+    const projection = calculateAccountingProjection({
+      settings: { ...settings, monthly_payment_chf: 0 },
+      people: ["Nic"],
+      period: "2026-06",
+      bookings: [{ status: "booked", start_date: "2026-06-12", end_date: "2026-06-14", guest_name: "Nic" }],
+      workEntries: [{ person: "Nic", month: "2026-06", days: 0.5 }],
+    });
+
+    expect(projection.usageByPerson.Nic).toBe(100);
+    expect(projection.netUsageByPerson.Nic).toBe(50);
+    expect(projection.workOffsetsByPerson.Nic).toBe(50);
+    expect(projection.workCarryForwardByPerson.Nic).toBe(0);
+    expect(projection.currentPots.vehicle.usage_funding_chf).toBe(50);
+    expect(projection.currentPots.livingWork.work_offset_chf).toBe(50);
+    expect(projection.suggestedSettlements).toEqual([
+      { from_person: "Nic", to_person: "shared_pot", amount_chf: 50, reason: "Shared pot due" },
+    ]);
+  });
+
+  it("uses the open current period from April 2026 onward", () => {
+    const projection = calculateAccountingProjection({
+      settings: { ...settings, monthly_payment_chf: 0 },
+      people: ["Nic"],
+      period: accountingCurrentOpenPeriod,
+      trips: [
+        { user_name: "Nic", timestamp: "2026-03-31T12:00:00Z", delta_km: 10 },
+        { user_name: "Nic", timestamp: "2026-04-01T12:00:00Z", delta_km: 20 },
+        { user_name: "Nic", timestamp: "2026-07-10T12:00:00Z", delta_km: 30 },
+      ],
+      workEntries: [
+        { person: "Nic", month: "2026-03", days: 1 },
+        { person: "Nic", month: "2026-04", days: 0.5 },
+      ],
+    });
+
+    expect(projection.kmByPerson.Nic).toBe(50);
+    expect(projection.workCreditsByPerson.Nic).toBe(50);
   });
 
   it("counts the source rows used by the monthly preview", () => {
@@ -136,8 +184,8 @@ describe("calculateAccountingProjection", () => {
 
     expect(projection.sharedPot.current_costs_chf).toBe(400);
     expect(projection.sharedPot.reserve_allocation_chf).toBe(420);
-    expect(projection.sharedPot.historical_repayment_chf).toBe(180);
-    expect(projection.sharedPot.balance_chf).toBe(0);
+    expect(projection.sharedPot.historical_repayment_chf).toBe(0);
+    expect(projection.sharedPot.balance_chf).toBe(180);
   });
 
   it("includes gas tab spend as current running cost without a cost entry", () => {
@@ -154,6 +202,8 @@ describe("calculateAccountingProjection", () => {
     expect(projection.sourceCounts).toMatchObject({ cost_entries: 0, fuel_entries: 1 });
     expect(projection.sharedPot.current_costs_chf).toBe(80);
     expect(projection.sharedPot.fuel_costs_chf).toBe(80);
+    expect(projection.currentPots.vehicle.fuel_costs_chf).toBe(80);
+    expect(projection.currentPots.vehicle.costs_chf).toBe(80);
     expect(projection.bucketTotals.shared_running).toBe(80);
     expect(projection.suggestedSettlements).toEqual([
       { from_person: "shared_pot", to_person: "Nic", amount_chf: 80, reason: "Shared pot reimbursement" },
@@ -173,8 +223,8 @@ describe("calculateAccountingProjection", () => {
 
     expect(projection.sharedPot.inflow_chf).toBe(288);
     expect(projection.sharedPot.reserve_allocation_chf).toBe(201.6);
-    expect(projection.sharedPot.historical_repayment_chf).toBe(86.4);
-    expect(projection.sharedPot.balance_chf).toBe(0);
+    expect(projection.sharedPot.historical_repayment_chf).toBe(0);
+    expect(projection.sharedPot.balance_chf).toBe(86.4);
   });
 
   it("suggests monthly payments into the shared pot", () => {
@@ -242,7 +292,8 @@ describe("calculateAccountingProjection", () => {
     });
 
     expect(projection.sharedPot.current_costs_chf).toBe(120);
-    expect(projection.sharedPot.outflow_chf).toBe(200);
+    expect(projection.sharedPot.outflow_chf).toBe(176);
+    expect(projection.currentPots.vehicle.costs_chf).toBe(120);
     expect(projection.suggestedSettlements).toEqual([
       { from_person: "Kayla", to_person: "shared_pot", amount_chf: 100, reason: "Shared pot due" },
       { from_person: "shared_pot", to_person: "Nic", amount_chf: 20, reason: "Shared pot reimbursement" },
@@ -265,9 +316,14 @@ describe("calculateAccountingProjection", () => {
     expect(projection.monthlyContributionsCHF).toBe(fixture.expected.monthly_contributions_chf);
     expect(projection.sharedPot).toMatchObject(fixture.expected.shared_pot);
     expect(projection.usageByPerson).toMatchObject(fixture.expected.usage_by_person);
+    expect(projection.netUsageByPerson).toMatchObject(fixture.expected.net_usage_by_person);
     expect(projection.workCreditsByPerson).toMatchObject(fixture.expected.work_credits_by_person);
+    expect(projection.workOffsetsByPerson).toMatchObject(fixture.expected.work_offsets_by_person);
+    expect(projection.workCarryForwardByPerson).toMatchObject(fixture.expected.work_carryforward_by_person);
     expect(projection.kmByPerson).toMatchObject(fixture.expected.km_by_person);
     expect(projection.nightsByPerson).toMatchObject(fixture.expected.nights_by_person);
+    expect(projection.currentPots.vehicle).toMatchObject(fixture.expected.current_pots.vehicle);
+    expect(projection.currentPots.livingWork).toMatchObject(fixture.expected.current_pots.living_work);
     expect(projection.bucketTotals).toMatchObject(fixture.expected.bucket_totals);
     expect(projection.personBalances).toMatchObject(fixture.expected.person_balances);
     expect(projection.settlementBalances).toMatchObject(fixture.expected.settlement_balances);
@@ -327,9 +383,16 @@ describe("normalizeAccountingProjectionFromApi", () => {
           contributions_due_chf: 150,
         },
         usage_by_person: { Nic: "60" },
+        net_usage_by_person: { Nic: "55" },
         work_credits_by_person: { Kayla: 50 },
+        work_offsets_by_person: { Kayla: 25 },
+        work_carryforward_by_person: { Kayla: 25 },
         km_by_person: { Nic: 120 },
         nights_by_person: { Kayla: 2 },
+        current_pots: {
+          vehicle: { usage_funding_chf: "110", costs_chf: 120, balance_chf: -10, deficit_chf: 10 },
+          living_work: { usage_funding_chf: 50, work_offset_chf: 25, work_carryforward_chf: 25 },
+        },
         bucket_totals: { usage: 160 },
         person_balances: { Nic: -60, Kayla: 50 },
         settlement_balances: { Nic: -60, Kayla: 50, shared_pot: 10 },
@@ -347,7 +410,13 @@ describe("normalizeAccountingProjectionFromApi", () => {
     expect(projection.sharedPot.external_income_chf).toBe(0);
     expect(projection.sharedPot.fuel_costs_chf).toBe(0);
     expect(projection.usageByPerson).toEqual({ Nic: 60, Kayla: 0 });
+    expect(projection.netUsageByPerson).toEqual({ Nic: 55, Kayla: 0 });
     expect(projection.workCreditsByPerson).toEqual({ Nic: 0, Kayla: 50 });
+    expect(projection.workOffsetsByPerson).toEqual({ Nic: 0, Kayla: 25 });
+    expect(projection.workCarryForwardByPerson).toEqual({ Nic: 0, Kayla: 25 });
+    expect(projection.currentPots.vehicle.usage_funding_chf).toBe(110);
+    expect(projection.currentPots.vehicle.deficit_chf).toBe(10);
+    expect(projection.currentPots.livingWork.work_offset_chf).toBe(25);
     expect(projection.settlementBalances.shared_pot).toBe(10);
     expect(projection.suggestedSettlements).toEqual([
       { from_person: "Nic", to_person: "shared_pot", amount_chf: 60.13, reason: "Shared pot due" },

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  accountingCurrentOpenPeriod,
+  accountingCurrentOpenStartDate,
   accountingBucketLabelMap,
   accountingPeople,
   calculateAccountingProjection,
@@ -30,7 +32,7 @@ const formatSettlementSummary = (rows = []) =>
     ? "No payments"
     : rows.map((row) => `${formatParty(row.from_person)} -> ${formatParty(row.to_person)} ${formatChf(row.amount_chf)}`).join("; ");
 
-const currentPeriod = () => new Date().toISOString().slice(0, 7);
+const currentMonth = () => new Date().toISOString().slice(0, 7);
 const accountingSettingKeys = [
   "km_rate_chf",
   "night_rate_chf",
@@ -53,12 +55,16 @@ const closeRequestFromProjection = (projection) => ({
 
 export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trips = [], fuelEntries = [], workEntries = [], people = accountingPeople }) {
   const [settings, setSettings] = useState(defaultAccountingSettings);
-  const [period, setPeriod] = useState(currentPeriod());
+  const [periodMode, setPeriodMode] = useState("current_open");
+  const [monthPeriod, setMonthPeriod] = useState(currentMonth());
   const [bookings, setBookings] = useState([]);
   const [apiProjection, setApiProjection] = useState(null);
   const [monthlyCloses, setMonthlyCloses] = useState([]);
   const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   const [status, setStatus] = useState({ state: "idle", message: "" });
+  const period = periodMode === "current_open" ? accountingCurrentOpenPeriod : monthPeriod;
+  const isCurrentOpenPeriod = period === accountingCurrentOpenPeriod;
+  const periodLabel = isCurrentOpenPeriod ? `Current open since ${accountingCurrentOpenStartDate}` : period;
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -84,9 +90,9 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
     if (!apiBaseUrl || !period) return;
     let isCancelled = false;
     const loadAccountingContext = async () => {
-      const [year] = period.split("-");
-      const from = `${year}-01-01`;
-      const to = `${Number(year) + 1}-01-01`;
+      const [year] = isCurrentOpenPeriod ? [accountingCurrentOpenStartDate.slice(0, 4)] : period.split("-");
+      const from = isCurrentOpenPeriod ? accountingCurrentOpenStartDate : `${year}-01-01`;
+      const to = isCurrentOpenPeriod ? "2100-01-01" : `${Number(year) + 1}-01-01`;
       try {
         const [bookingResponse, closeResponse, previewResponse] = await Promise.all([
           fetch(`${apiBaseUrl}/bookings?${new URLSearchParams({ from, to, visibility: "owner" })}`),
@@ -120,7 +126,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
     return () => {
       isCancelled = true;
     };
-  }, [apiBaseUrl, people, period, previewRefreshKey]);
+  }, [apiBaseUrl, isCurrentOpenPeriod, people, period, previewRefreshKey]);
 
   const localProjection = useMemo(
     () =>
@@ -144,8 +150,16 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
 
   const historicalRows = useMemo(() => costEntries.filter((entry) => entry.historical || entry.historical_only), [costEntries]);
   const visibleMonthlyCloses = monthlyCloses.slice(0, 12);
-  const existingClose = monthlyCloses.find((close) => close.period === period);
-  const closeButtonLabel = existingClose ? "Month already closed" : previewUsesUnsavedSettings ? "Save settings first" : "Save monthly close";
+  const existingClose = isCurrentOpenPeriod ? null : monthlyCloses.find((close) => close.period === period);
+  const closeButtonLabel = isCurrentOpenPeriod
+    ? "Choose a month to close"
+    : existingClose
+      ? "Month already closed"
+      : previewUsesUnsavedSettings
+        ? "Save settings first"
+        : "Save monthly close";
+  const vehiclePot = projection.currentPots?.vehicle || {};
+  const livingWorkPot = projection.currentPots?.livingWork || {};
 
   const handleSettingChange = (event) => {
     const { name, value } = event.target;
@@ -181,6 +195,10 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
   const handleSaveMonthlyClose = async () => {
     if (!apiBaseUrl) {
       setStatus({ state: "error", message: "Missing API URL. Monthly close can only be previewed locally." });
+      return;
+    }
+    if (isCurrentOpenPeriod) {
+      setStatus({ state: "error", message: "Switch to a month before saving a monthly close." });
       return;
     }
     if (existingClose) {
@@ -219,14 +237,23 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
         <header>
           <p className="eyebrow">Doppelte Buchhaltung</p>
           <h1>Private van accounting</h1>
-          <p className="subtitle">Preview the monthly shared pot, usage charges, work credits, reserve, and historical repayment.</p>
+          <p className="subtitle">Track the open period with a vehicle pot, a nights/work pot, and historical Ausgleich kept separate.</p>
         </header>
         {status.state !== "idle" && <div className={`status ${status.state}`}>{status.message}</div>}
         <div className="inline-grid four-col">
           <label className="field">
-            <span>Month</span>
-            <input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />
+            <span>View</span>
+            <select value={periodMode} onChange={(event) => setPeriodMode(event.target.value)}>
+              <option value="current_open">Current open period</option>
+              <option value="month">Single month</option>
+            </select>
           </label>
+          {periodMode === "month" && (
+            <label className="field">
+              <span>Month</span>
+              <input type="month" value={monthPeriod} onChange={(event) => setMonthPeriod(event.target.value)} />
+            </label>
+          )}
           <label className="field">
             <span>Km rate</span>
             <input name="km_rate_chf" type="number" step="0.01" value={settings.km_rate_chf} onChange={handleSettingChange} />
@@ -266,7 +293,12 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
           <button className="submit" type="button" onClick={handleSaveSettings}>
             Save settings
           </button>
-          <button className="cancel" type="button" onClick={handleSaveMonthlyClose} disabled={Boolean(existingClose || previewUsesUnsavedSettings)}>
+          <button
+            className="cancel"
+            type="button"
+            onClick={handleSaveMonthlyClose}
+            disabled={Boolean(isCurrentOpenPeriod || existingClose || previewUsesUnsavedSettings)}
+          >
             {closeButtonLabel}
           </button>
         </div>
@@ -281,13 +313,13 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
       <section className="card table-card">
         <header>
           <p className="eyebrow">Shared konto</p>
-          <h2>Monthly preview</h2>
+          <h2>{periodLabel}</h2>
         </header>
         <div className="summary-grid compact-summary-grid">
           <article className="summary-card compact-summary-card">
-            <p className="summary-label">Pot inflow</p>
+            <p className="summary-label">Bank inflow</p>
             <p className="summary-value">{formatChf(projection.sharedPot.inflow_chf)}</p>
-            <p className="summary-hint">Monthly payments, usage, and income.</p>
+            <p className="summary-hint">Payments, net usage, and income.</p>
           </article>
           <article className="summary-card compact-summary-card">
             <p className="summary-label">Monthly due</p>
@@ -302,7 +334,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
           <article className="summary-card compact-summary-card">
             <p className="summary-label">Current costs</p>
             <p className="summary-value">{formatChf(projection.sharedPot.current_costs_chf)}</p>
-            <p className="summary-hint">Shared running and usage costs first.</p>
+            <p className="summary-hint">Vehicle and living costs before reserve.</p>
           </article>
           <article className="summary-card compact-summary-card">
             <p className="summary-label">Gas costs</p>
@@ -317,12 +349,70 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
           <article className="summary-card compact-summary-card">
             <p className="summary-label">Historical repayment</p>
             <p className="summary-value">{formatChf(projection.sharedPot.historical_repayment_chf)}</p>
-            <p className="summary-hint">Only after current costs are covered.</p>
+            <p className="summary-hint">Paused; shown as Ausgleich below.</p>
           </article>
           <article className="summary-card compact-summary-card">
             <p className="summary-label">Pot balance</p>
             <p className="summary-value">{formatChf(projection.sharedPot.balance_chf)}</p>
-            <p className="summary-hint">Preview result for {period}.</p>
+            <p className="summary-hint">Cash left after current policy.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="card table-card">
+        <header>
+          <p className="eyebrow">Vehicle running</p>
+          <h2>KM, gas, insurance, maintenance</h2>
+        </header>
+        <div className="summary-grid compact-summary-grid">
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Usage funding</p>
+            <p className="summary-value">{formatChf(vehiclePot.usage_funding_chf)}</p>
+            <p className="summary-hint">All km plus half of nights.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Vehicle costs</p>
+            <p className="summary-value">{formatChf(vehiclePot.costs_chf)}</p>
+            <p className="summary-hint">Gas, insurance, road fees, repairs.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Vehicle balance</p>
+            <p className="summary-value">{formatChf(vehiclePot.balance_chf)}</p>
+            <p className="summary-hint">{vehiclePot.deficit_chf > 0 ? `${formatChf(vehiclePot.deficit_chf)} needs shared bank cover.` : "Covered by usage."}</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Gas from tab</p>
+            <p className="summary-value">{formatChf(vehiclePot.fuel_costs_chf)}</p>
+            <p className="summary-hint">Not duplicated in Costs.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="card table-card">
+        <header>
+          <p className="eyebrow">Nights & work</p>
+          <h2>Overnight usage and credits</h2>
+        </header>
+        <div className="summary-grid compact-summary-grid">
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Night funding</p>
+            <p className="summary-value">{formatChf(livingWorkPot.night_funding_chf)}</p>
+            <p className="summary-hint">Half of night charges.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Work used</p>
+            <p className="summary-value">{formatChf(livingWorkPot.work_offset_chf)}</p>
+            <p className="summary-hint">Offsets night charges first.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Work carried</p>
+            <p className="summary-value">{formatChf(livingWorkPot.work_carryforward_chf)}</p>
+            <p className="summary-hint">Value kept for future offsets.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Living balance</p>
+            <p className="summary-value">{formatChf(livingWorkPot.balance_chf)}</p>
+            <p className="summary-hint">Nights/work pot only.</p>
           </article>
         </div>
       </section>
@@ -330,7 +420,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
       <section className="card table-card">
         <header>
           <p className="eyebrow">People</p>
-          <h2>Balances and usage</h2>
+          <h2>Usage, work, cash balance</h2>
         </header>
         <div className="table-wrap">
           <table>
@@ -340,7 +430,8 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
                 <th>Km</th>
                 <th>Nights</th>
                 <th>Usage</th>
-                <th>Work credit</th>
+                <th>Work used</th>
+                <th>Work carried</th>
                 <th>Balance</th>
               </tr>
             </thead>
@@ -351,7 +442,8 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
                   <td>{projection.kmByPerson[person].toFixed(1)}</td>
                   <td>{projection.nightsByPerson[person].toFixed(1)}</td>
                   <td>{formatChf(projection.usageByPerson[person])}</td>
-                  <td>{formatChf(projection.workCreditsByPerson[person])}</td>
+                  <td>{formatChf(projection.workOffsetsByPerson?.[person])}</td>
+                  <td>{formatChf(projection.workCarryForwardByPerson?.[person])}</td>
                   <td>{formatChf(projection.personBalances[person])}</td>
                 </tr>
               ))}
@@ -399,6 +491,30 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
 
       <section className="card full-span table-card">
         <header>
+          <p className="eyebrow">Historical Ausgleich</p>
+          <h2>Frozen backlog</h2>
+        </header>
+        <div className="summary-grid compact-summary-grid">
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Historical basis</p>
+            <p className="summary-value">{formatChf(projection.historical.investment_chf)}</p>
+            <p className="summary-hint">Imported audit/investment rows.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Historical rows</p>
+            <p className="summary-value">{projection.historical.rows}</p>
+            <p className="summary-hint">Kept out of current running costs.</p>
+          </article>
+          <article className="summary-card compact-summary-card">
+            <p className="summary-label">Current repayment</p>
+            <p className="summary-value">{formatChf(projection.sharedPot.historical_repayment_chf)}</p>
+            <p className="summary-hint">Paused until you decide the Ausgleich rule.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="card full-span table-card">
+        <header>
           <p className="eyebrow">Audit</p>
           <h2>Double-entry buckets</h2>
         </header>
@@ -416,7 +532,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
             ))}
         </div>
         <p className="subtitle">
-          Preview rows: {formatSourceCounts(projection.sourceCounts)}. Historical audit rows loaded: {historicalRows.length}. Historical investment basis:{" "}
+          Rows used: {formatSourceCounts(projection.sourceCounts)}. Historical audit rows loaded: {historicalRows.length}. Historical investment basis:{" "}
           {formatChf(projection.historical.investment_chf)}.
         </p>
       </section>

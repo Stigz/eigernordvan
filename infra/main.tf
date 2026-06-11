@@ -182,6 +182,8 @@ resource "aws_lambda_function" "trip_logger" {
   role          = aws_iam_role.lambda_role.arn
   handler       = "bootstrap"
   runtime       = "provided.al2023"
+  timeout       = 30
+  memory_size   = 256
 
   filename         = var.lambda_zip_path
   source_code_hash = filebase64sha256(var.lambda_zip_path)
