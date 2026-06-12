@@ -7,6 +7,7 @@ import {
 } from "./accounting";
 
 const sharedPotAccount = "shared_pot";
+const externalIncomeNode = "source:income";
 
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const numberOr = (value, fallback = 0) => {
@@ -88,6 +89,8 @@ const makeMoneyRow = ({ label, person = "", source = "", date = "", description 
   detail,
 });
 
+const emptyPersonMoneyMap = (people = []) => Object.fromEntries(people.map((person) => [person, 0]));
+
 const addDetail = (items, id, payload) => {
   items[id] = {
     id,
@@ -97,10 +100,13 @@ const addDetail = (items, id, payload) => {
   };
 };
 
-export const buildAccountingFlowModel = ({
+export const buildSankeyAccountingModel = ({
   projection,
   costEntries = [],
   fuelEntries = [],
+  trips = [],
+  bookings = [],
+  workEntries = [],
   people = accountingPeople,
   period,
   settings,
@@ -123,10 +129,50 @@ export const buildAccountingFlowModel = ({
   const vehicleCostRows = [];
   const livingCostRows = [];
   const incomeRows = [];
+  const monthlyPaidByPerson = emptyPersonMoneyMap(activePeople);
+  const privatePaidByPerson = emptyPersonMoneyMap(activePeople);
+  const monthlyRows = [];
+  const usageRows = [];
+  const workRows = [];
+  const transferRows = currentTransfers.map((entry) =>
+    makeMoneyRow({
+      label: "Eingetragen bezahlt",
+      person: entry.from_person || entry.paid_by || "",
+      source: "Kosten",
+      date: entry.date,
+      description: entry.description || "Transfer",
+      amount: roundMoney(entry.amount_chf),
+      formula: `${entry.from_person || "-"} → ${entry.to_person || "-"}`,
+      detail: entry.id || "",
+    }),
+  );
+
+  activePeople.forEach((person) => {
+    monthlyRows.push(
+      makeMoneyRow({
+        label: "Monatlicher Basisbeitrag",
+        person,
+        source: "Regel",
+        description: "Fixer Monatsbeitrag in gemeinsames Konto",
+        amount: normalizedSettings.monthly_payment_chf,
+        formula: `CHF ${normalizedSettings.monthly_payment_chf.toFixed(2)} pro Person`,
+      }),
+    );
+  });
+
+  currentTransfers.forEach((entry) => {
+    const amount = roundMoney(entry.amount_chf);
+    if (entry.to_person === sharedPotAccount && Object.prototype.hasOwnProperty.call(monthlyPaidByPerson, entry.from_person)) {
+      monthlyPaidByPerson[entry.from_person] = roundMoney(monthlyPaidByPerson[entry.from_person] + amount);
+    }
+  });
 
   fuelEntries.forEach((entry) => {
     const amount = normalizeFuelAmount(entry);
     if (amount <= 0 || entry.missed || !dateInPeriod(entry.timestamp, activePeriod)) return;
+    if (Object.prototype.hasOwnProperty.call(privatePaidByPerson, entry.user_name)) {
+      privatePaidByPerson[entry.user_name] = roundMoney(privatePaidByPerson[entry.user_name] + amount);
+    }
     vehicleCostRows.push(
       makeMoneyRow({
         label: "Gas",
@@ -161,6 +207,9 @@ export const buildAccountingFlowModel = ({
     }
     if (entry.type !== "expense") return;
     const target = currentCostPot(entry);
+    if (entry.funding_account !== sharedPotAccount && Object.prototype.hasOwnProperty.call(privatePaidByPerson, entry.paid_by)) {
+      privatePaidByPerson[entry.paid_by] = roundMoney(privatePaidByPerson[entry.paid_by] + amount);
+    }
     const row = makeMoneyRow({
       label: target === "living" ? "Wohn-/Ausbaukosten" : "Fahrzeugkosten",
       person: entry.paid_by || "",
@@ -191,21 +240,66 @@ export const buildAccountingFlowModel = ({
     const workUsed = roundMoney(numberOr(safeProjection.workOffsetsByPerson?.[person]));
     const workCarried = roundMoney(numberOr(safeProjection.workCarryForwardByPerson?.[person]));
     const balance = roundMoney(numberOr(safeProjection.personBalances?.[person]));
+    const settlementBalance = roundMoney(numberOr(safeProjection.settlementBalances?.[person]));
     const suggestedDue = roundMoney(
       (safeProjection.suggestedSettlements || [])
-        .filter((row) => row.from_person === person)
+        .filter((row) => row.from_person === person && row.to_person === sharedPotAccount)
         .reduce((sum, row) => sum + numberOr(row.amount_chf), 0),
     );
     const suggestedReceivable = roundMoney(
       (safeProjection.suggestedSettlements || [])
-        .filter((row) => row.to_person === person)
+        .filter((row) => row.from_person === sharedPotAccount && row.to_person === person)
         .reduce((sum, row) => sum + numberOr(row.amount_chf), 0),
     );
+    const monthlyDue = roundMoney(normalizedSettings.monthly_payment_chf);
+    const monthlyPaid = roundMoney(monthlyPaidByPerson[person]);
+    const privatePaid = roundMoney(privatePaidByPerson[person]);
+
+    if (kmCharge > 0) {
+      usageRows.push(
+        makeMoneyRow({
+          label: "Kilometer",
+          person,
+          source: "KM",
+          description: "Distanzbasierte Fahrzeugnutzung",
+          amount: kmCharge,
+          formula: `${km.toFixed(1)} km × CHF ${normalizedSettings.km_rate_chf.toFixed(2)}`,
+        }),
+      );
+    }
+    if (nightCharge > 0) {
+      usageRows.push(
+        makeMoneyRow({
+          label: "Nächte",
+          person,
+          source: "Booking",
+          description: "Übernachtungen, 50/50 Fahrzeug und Ausbau",
+          amount: nightCharge,
+          formula: `${nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)}`,
+        }),
+      );
+    }
+    if (workCredit > 0 || workUsed > 0 || workCarried > 0) {
+      workRows.push(
+        makeMoneyRow({
+          label: "Arbeit",
+          person,
+          source: "Work",
+          description: "Interner Credit, kein Cash-Payout",
+          amount: workUsed,
+          formula: `min(CHF ${workCredit.toFixed(2)}, CHF ${nightLiving.toFixed(2)})`,
+        }),
+      );
+    }
 
     return {
       person,
       km,
       nights,
+      monthlyDue,
+      monthlyPaid,
+      privatePaid,
+      alreadyPaid: roundMoney(monthlyPaid + privatePaid),
       kmCharge,
       nightCharge,
       nightVehicle,
@@ -218,8 +312,11 @@ export const buildAccountingFlowModel = ({
       usageTotal: roundMoney(numberOr(safeProjection.usageByPerson?.[person])),
       netUsage: roundMoney(numberOr(safeProjection.netUsageByPerson?.[person])),
       balance,
+      settlementBalance,
       suggestedDue,
       suggestedReceivable,
+      netSettlement: roundMoney(suggestedReceivable - suggestedDue),
+      resultLabel: suggestedReceivable > 0 ? "Gets reimbursed" : suggestedDue > 0 ? "Must pay now" : "Balanced for now",
       formula: `${km.toFixed(1)} km × ${normalizedSettings.km_rate_chf.toFixed(2)} + ${nights.toFixed(1)} Nächte × ${normalizedSettings.night_rate_chf.toFixed(2)}`,
     };
   });
@@ -235,29 +332,79 @@ export const buildAccountingFlowModel = ({
   const currentCostTotal = roundMoney(numberOr(sharedPot.current_costs_chf));
   const historicalAmount = roundMoney(numberOr(safeProjection.historical?.investment_chf));
   const historicalCount = Math.max(0, Math.trunc(numberOr(safeProjection.historical?.rows ?? historicalRows.length)));
+  const monthlyDueTotal = roundMoney(personRows.reduce((sum, row) => sum + row.monthlyDue, 0));
+  const kmChargeTotal = roundMoney(personRows.reduce((sum, row) => sum + row.kmCharge, 0));
+  const nightVehicleTotal = roundMoney(personRows.reduce((sum, row) => sum + row.nightVehicle, 0));
+  const nightLivingTotal = roundMoney(personRows.reduce((sum, row) => sum + row.nightLiving, 0));
+  const totalPrivatePaid = roundMoney(personRows.reduce((sum, row) => sum + row.privatePaid, 0));
+  const totalMonthlyPaid = roundMoney(personRows.reduce((sum, row) => sum + row.monthlyPaid, 0));
+  const totalDueToSharedPot = roundMoney(personRows.reduce((sum, row) => sum + row.suggestedDue, 0));
+  const totalReimbursementsFromSharedPot = roundMoney(personRows.reduce((sum, row) => sum + row.suggestedReceivable, 0));
+  const externalIncome = roundMoney(numberOr(sharedPot.external_income_chf));
+  const hasMeaningfulData =
+    monthlyDueTotal > 0 ||
+    kmChargeTotal > 0 ||
+    nightVehicleTotal > 0 ||
+    totalWorkUsed > 0 ||
+    vehicleCosts > 0 ||
+    livingCosts > 0 ||
+    totalDueToSharedPot > 0 ||
+    totalReimbursementsFromSharedPot > 0 ||
+    externalIncome > 0;
 
   const links = [];
   const pushLink = (link) => {
     const amount = roundMoney(link.amount);
     if (amount <= 0) return;
-    links.push({ ...link, amount });
+    links.push({ ...link, amount, rows: link.rows || [], explanation: link.explanation || "" });
   };
 
   personRows.forEach((row) => {
     pushLink({
-      id: `person:${row.person}:vehicle`,
+      id: `person:${row.person}:monthly`,
       from: `person:${row.person}`,
-      to: "pot:vehicle",
-      label: `${row.person} → Fahrzeug`,
-      amount: row.vehicleFunding,
-      tone: "vehicle",
+      to: "charge:monthly",
+      label: `${row.person} monthly base`,
+      amount: row.monthlyDue,
+      tone: "monthly",
+      category: "monthly",
       rows: [
         makeMoneyRow({
-          label: "KM",
+          label: "Monatlicher Basisbeitrag",
+          person: row.person,
+          amount: row.monthlyDue,
+          formula: `CHF ${normalizedSettings.monthly_payment_chf.toFixed(2)} pro Person`,
+        }),
+      ],
+      explanation: "Monthly base keeps predictable fixed costs and the shared konto alive.",
+    });
+    pushLink({
+      id: `person:${row.person}:km`,
+      from: `person:${row.person}`,
+      to: "charge:km",
+      label: `${row.person} km`,
+      amount: row.kmCharge,
+      tone: "vehicle",
+      category: "km",
+      rows: [
+        makeMoneyRow({
+          label: "Kilometer",
           person: row.person,
           amount: row.kmCharge,
           formula: `${row.km.toFixed(1)} km × CHF ${normalizedSettings.km_rate_chf.toFixed(2)}`,
         }),
+      ],
+      explanation: "Distance usage funds the vehicle pot for wear, diesel, service, and vehicle fees.",
+    });
+    pushLink({
+      id: `person:${row.person}:night_vehicle`,
+      from: `person:${row.person}`,
+      to: "charge:night-vehicle",
+      label: `${row.person} nights vehicle share`,
+      amount: row.nightVehicle,
+      tone: "vehicle",
+      category: "night_vehicle",
+      rows: [
         makeMoneyRow({
           label: "1/2 Nächte",
           person: row.person,
@@ -265,14 +412,16 @@ export const buildAccountingFlowModel = ({
           formula: `${row.nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)} ÷ 2`,
         }),
       ],
+      explanation: "Half of night usage helps cover the vehicle side because overnight use still consumes the van.",
     });
     pushLink({
-      id: `person:${row.person}:living`,
+      id: `person:${row.person}:night_living`,
       from: `person:${row.person}`,
-      to: "pot:living",
-      label: `${row.person} → Nächte & Arbeit`,
+      to: "charge:night-living",
+      label: `${row.person} nights living share`,
       amount: row.livingFunding,
       tone: "living",
+      category: "night_living",
       rows: [
         makeMoneyRow({
           label: "1/2 Nächte",
@@ -281,14 +430,16 @@ export const buildAccountingFlowModel = ({
           formula: `${row.nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)} ÷ 2`,
         }),
       ],
+      explanation: "Half of night usage funds living/Ausbau and can be offset by work credit.",
     });
     pushLink({
       id: `person:${row.person}:work`,
       from: `person:${row.person}`,
-      to: "pot:living",
-      label: `${row.person} Arbeit`,
+      to: "charge:work",
+      label: `${row.person} work credit`,
       amount: row.workUsed,
       tone: "work",
+      category: "work_credit",
       dashed: true,
       rows: [
         makeMoneyRow({
@@ -304,9 +455,138 @@ export const buildAccountingFlowModel = ({
           formula: `CHF ${row.workCredit.toFixed(2)} - CHF ${row.workUsed.toFixed(2)}`,
         }),
       ],
+      explanation: "Work credit is an internal offset against living/night charges. It is not cash in the shared konto.",
+    });
+    pushLink({
+      id: `person:${row.person}:private_paid`,
+      from: `person:${row.person}`,
+      to: "charge:private-paid",
+      label: `${row.person} already paid`,
+      amount: row.privatePaid,
+      tone: "reimbursement",
+      category: "expense_paid",
+      rows: [
+        makeMoneyRow({
+          label: "Privat bezahlt",
+          person: row.person,
+          amount: row.privatePaid,
+          formula: "Gas/Kosten privat bezahlt",
+        }),
+      ],
+      explanation: "Private payments are credited because the shared pot owes that person back.",
+    });
+    pushLink({
+      id: `person:${row.person}:still_due`,
+      from: `person:${row.person}`,
+      to: "settle:due",
+      label: `${row.person} must pay now`,
+      amount: row.suggestedDue,
+      tone: "settlement",
+      category: "still_due",
+      rows: [
+        makeMoneyRow({
+          label: "Must pay now",
+          person: row.person,
+          amount: row.suggestedDue,
+          formula: "Suggested settlement into shared pot",
+        }),
+      ],
+      explanation: "This is the real cash movement still needed now.",
     });
   });
 
+  pushLink({
+    id: "monthly:shared",
+    from: "charge:monthly",
+    to: "pot:shared",
+    label: "Monthly base → shared pot",
+    amount: monthlyDueTotal,
+    tone: "monthly",
+    category: "monthly",
+    rows: monthlyRows,
+    explanation: "Base payments are the predictable monthly obligation for the shared konto.",
+  });
+  pushLink({
+    id: "km:vehicle",
+    from: "charge:km",
+    to: "pot:vehicle",
+    label: "KM → vehicle pot",
+    amount: kmChargeTotal,
+    tone: "vehicle",
+    category: "km",
+    rows: usageRows.filter((row) => row.label === "Kilometer"),
+    explanation: "All kilometre charges fund the vehicle pot.",
+  });
+  pushLink({
+    id: "night-vehicle:vehicle",
+    from: "charge:night-vehicle",
+    to: "pot:vehicle",
+    label: "Half nights → vehicle pot",
+    amount: nightVehicleTotal,
+    tone: "vehicle",
+    category: "night_vehicle",
+    rows: personRows.map((row) =>
+      makeMoneyRow({
+        label: "1/2 Nächte",
+        person: row.person,
+        amount: row.nightVehicle,
+        formula: `${row.nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)} ÷ 2`,
+      }),
+    ),
+    explanation: "Night charges are split 50/50: half helps the vehicle pot.",
+  });
+  pushLink({
+    id: "night-living:living",
+    from: "charge:night-living",
+    to: "pot:living",
+    label: "Half nights → living pot",
+    amount: nightLivingTotal,
+    tone: "living",
+    category: "night_living",
+    rows: personRows.map((row) =>
+      makeMoneyRow({
+        label: "1/2 Nächte",
+        person: row.person,
+        amount: row.nightLiving,
+        formula: `${row.nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)} ÷ 2`,
+      }),
+    ),
+    explanation: "Night charges are split 50/50: half funds living/Ausbau.",
+  });
+  pushLink({
+    id: "work:living",
+    from: "charge:work",
+    to: "pot:living",
+    label: "Work credit offset",
+    amount: totalWorkUsed,
+    tone: "work",
+    category: "work_credit",
+    dashed: true,
+    rows: workRows,
+    explanation: "Work reduces living/night charges first and carries forward if unused. It is not cash.",
+  });
+  pushLink({
+    id: "private-paid:reimbursements",
+    from: "charge:private-paid",
+    to: "out:reimbursements",
+    label: "Private payments credited",
+    amount: totalPrivatePaid,
+    tone: "reimbursement",
+    category: "expense_paid",
+    rows: [...vehicleCostRows, ...livingCostRows].filter((row) => row.formula.includes("Privat bezahlt")),
+    explanation: "When someone paid gas or shared costs privately, the shared pot should reimburse them.",
+  });
+  pushLink({
+    id: "income:shared",
+    from: externalIncomeNode,
+    to: "pot:shared",
+    label: "Income → shared pot",
+    amount: externalIncome,
+    tone: "income",
+    category: "income",
+    rows: incomeRows,
+    explanation: "Rental and external income helps cover current shared costs first.",
+  });
   pushLink({
     id: "vehicle:costs",
     from: "pot:vehicle",
@@ -314,7 +594,9 @@ export const buildAccountingFlowModel = ({
     label: "Fahrzeug zahlt Kosten",
     amount: vehicleCosts,
     tone: "vehicle",
+    category: "vehicle_cost",
     rows: vehicleCostRows,
+    explanation: "Vehicle pot covers gas, repairs, insurance, taxes, road fees, service, and maintenance.",
   });
   pushLink({
     id: "living:costs",
@@ -323,7 +605,9 @@ export const buildAccountingFlowModel = ({
     label: "Nächte & Arbeit verrechnet",
     amount: livingCosts,
     tone: "living",
+    category: "living_cost",
     rows: livingCostRows,
+    explanation: "Living/Ausbau pot covers interior and comfort costs plus used work offsets.",
   });
   pushLink({
     id: "shared:reserve",
@@ -331,8 +615,10 @@ export const buildAccountingFlowModel = ({
     to: "out:reserve",
     label: "Reserve",
     amount: reserve,
-    tone: "shared",
+    tone: "reserve",
+    category: "reserve",
     rows: [makeMoneyRow({ label: "Reserve", amount: reserve, formula: "Überschuss × Reserve-Regel" })],
+    explanation: "Surplus after current costs goes to reserve before historical repayment.",
   });
   pushLink({
     id: "shared:balance",
@@ -340,8 +626,30 @@ export const buildAccountingFlowModel = ({
     to: "out:balance",
     label: "Rest",
     amount: potBalance,
-    tone: "shared",
+    tone: "balance",
+    category: "balance",
     rows: [makeMoneyRow({ label: "Rest im Konto", amount: potBalance, formula: "Zufluss - Kosten - Reserve" })],
+    explanation: "Cash left after current policy.",
+  });
+  pushLink({
+    id: "shared:reimbursements",
+    from: "pot:shared",
+    to: "settle:reimburse",
+    label: "Gets reimbursed",
+    amount: totalReimbursementsFromSharedPot,
+    tone: "settlement",
+    category: "reimbursement",
+    rows: personRows
+      .filter((row) => row.suggestedReceivable > 0)
+      .map((row) =>
+        makeMoneyRow({
+          label: "Gets reimbursed",
+          person: row.person,
+          amount: row.suggestedReceivable,
+          formula: "Shared pot → person",
+        }),
+      ),
+    explanation: "These are real reimbursements from the shared konto.",
   });
   pushLink({
     id: "history:paused",
@@ -350,7 +658,9 @@ export const buildAccountingFlowModel = ({
     label: "Historischer Ausgleich",
     amount: historicalAmount,
     tone: "history",
+    category: "historical_paused",
     muted: true,
+    dashed: true,
     rows: [
       makeMoneyRow({
         label: "Historischer Ausgleich",
@@ -358,6 +668,7 @@ export const buildAccountingFlowModel = ({
         formula: `${historicalCount} importierte Zeilen, aktuell pausiert`,
       }),
     ],
+    explanation: "Old investments stay visible, but they are not charged in this current period.",
   });
 
   const nodes = [
@@ -365,43 +676,81 @@ export const buildAccountingFlowModel = ({
       id: `person:${row.person}`,
       label: row.person,
       kind: "person",
-      amount: roundMoney(row.vehicleFunding + row.livingFunding - row.workUsed),
-      detail: `${row.km.toFixed(1)} km, ${row.nights.toFixed(1)} Nächte`,
+      column: 0,
+      tone: "person",
+      amount: roundMoney(row.monthlyDue + row.usageTotal + row.privatePaid),
+      detail: `${row.km.toFixed(1)} km, ${row.nights.toFixed(1)} nights`,
+      explanation: row.resultLabel,
     })),
     {
+      id: externalIncomeNode,
+      label: "External income",
+      kind: "source",
+      column: 0,
+      tone: "income",
+      amount: externalIncome,
+      detail: "Rentals / income",
+      hiddenWhenZero: true,
+    },
+    { id: "charge:monthly", label: "Monthly base", kind: "charge", column: 1, tone: "monthly", amount: monthlyDueTotal, detail: "Fixed contribution" },
+    { id: "charge:km", label: "Kilometres", kind: "charge", column: 1, tone: "vehicle", amount: kmChargeTotal, detail: "km × rate" },
+    { id: "charge:night-vehicle", label: "1/2 nights vehicle", kind: "charge", column: 1, tone: "vehicle", amount: nightVehicleTotal, detail: "night split" },
+    { id: "charge:night-living", label: "1/2 nights living", kind: "charge", column: 1, tone: "living", amount: nightLivingTotal, detail: "night split" },
+    { id: "charge:work", label: "Work credit", kind: "charge", column: 1, tone: "work", amount: totalWorkUsed, detail: "internal, not cash" },
+    { id: "charge:private-paid", label: "Already paid privately", kind: "charge", column: 1, tone: "reimbursement", amount: totalPrivatePaid, detail: "creates credit" },
+    {
       id: "pot:vehicle",
-      label: "Prio 1: Fahrzeug",
+      label: "Vehicle pot",
       kind: "pot",
+      column: 2,
+      tone: "vehicle",
       amount: roundMoney(numberOr(vehiclePot.usage_funding_chf)),
-      detail: "KM + 1/2 Nächte",
+      detail: "km + 1/2 nights",
     },
     {
       id: "pot:living",
-      label: "Prio 2: Nächte & Arbeit",
+      label: "Living / Ausbau pot",
       kind: "pot",
+      column: 2,
+      tone: "living",
       amount: roundMoney(numberOr(livingPot.usage_funding_chf)),
-      detail: "1/2 Nächte, Arbeit verrechnet",
+      detail: "1/2 nights + work",
     },
     {
       id: "pot:shared",
-      label: "Gemeinsames Konto",
+      label: "Shared pot",
       kind: "pot",
+      column: 2,
+      tone: "shared",
       amount: roundMoney(numberOr(sharedPot.inflow_chf)),
-      detail: "Soll-Zufluss und Reserve",
+      detail: "real konto",
     },
     {
       id: "pot:history",
-      label: "Historischer Ausgleich",
+      label: "Historical investment",
       kind: "history",
+      column: 2,
+      tone: "history",
       amount: historicalAmount,
-      detail: "Pausiert",
+      detail: "paused",
     },
-    { id: "out:vehicle-costs", label: "Gas, Unterhalt, Gebühren", kind: "output", amount: vehicleCosts },
-    { id: "out:living-costs", label: "Wohnkosten + Arbeit genutzt", kind: "output", amount: livingCosts },
-    { id: "out:reserve", label: "Reserve", kind: "output", amount: reserve },
-    { id: "out:balance", label: "Rest im Konto", kind: "output", amount: potBalance },
-    { id: "out:history", label: "Späterer Ausgleich", kind: "history", amount: historicalAmount },
-  ];
+    { id: "out:vehicle-costs", label: "Vehicle costs", kind: "output", column: 3, tone: "vehicle", amount: vehicleCosts, detail: "gas, service, fees" },
+    { id: "out:living-costs", label: "Living / Ausbau costs", kind: "output", column: 3, tone: "living", amount: livingCosts, detail: "interior + work" },
+    { id: "out:reserve", label: "Reserve", kind: "output", column: 3, tone: "reserve", amount: reserve, detail: "future safety" },
+    { id: "out:balance", label: "Remaining balance", kind: "output", column: 3, tone: "balance", amount: potBalance, detail: "cash left" },
+    { id: "out:reimbursements", label: "Private payments credited", kind: "output", column: 3, tone: "reimbursement", amount: totalPrivatePaid, detail: "already paid" },
+    { id: "out:history", label: "Later repayment", kind: "history", column: 3, tone: "history", amount: historicalAmount, detail: "not active" },
+    { id: "settle:due", label: "Must pay now", kind: "settlement", column: 4, tone: "settlement", amount: totalDueToSharedPot, detail: "into shared pot" },
+    {
+      id: "settle:reimburse",
+      label: "Gets reimbursed",
+      kind: "settlement",
+      column: 4,
+      tone: "settlement",
+      amount: totalReimbursementsFromSharedPot,
+      detail: "from shared pot",
+    },
+  ].filter((node) => !node.hiddenWhenZero || Number(node.amount || 0) > 0);
 
   addDetail(detailItems, "overview", {
     title: "Übersicht",
@@ -482,6 +831,18 @@ export const buildAccountingFlowModel = ({
       rows: link.rows,
     });
   });
+  nodes.forEach((node) => {
+    if (!detailItems[node.id]) {
+      addDetail(detailItems, node.id, {
+        title: node.label,
+        subtitle: node.explanation || node.detail || "Accounting node.",
+        amount: node.amount,
+        rows: links
+          .filter((link) => link.from === node.id || link.to === node.id)
+          .map((link) => makeMoneyRow({ label: link.label, amount: link.amount, formula: link.explanation || link.category || "" })),
+      });
+    }
+  });
 
   const overviewRows = [
     makeMoneyRow({ label: "Soll-Zufluss", amount: numberOr(sharedPot.inflow_chf), formula: "Monatlich fällig + Nutzung + Einnahmen - Arbeit genutzt" }),
@@ -489,6 +850,23 @@ export const buildAccountingFlowModel = ({
     makeMoneyRow({ label: "Reserve", amount: reserve, formula: "Überschuss × Reserve-Regel" }),
     makeMoneyRow({ label: "Rest", amount: potBalance, formula: "Zufluss - Kosten - Reserve" }),
     makeMoneyRow({ label: "Historisch pausiert", amount: historicalAmount, formula: "Nicht in aktueller Zahlung" }),
+  ];
+  const auditRows = [
+    ...monthlyRows,
+    ...usageRows,
+    ...workRows,
+    ...vehicleCostRows,
+    ...livingCostRows,
+    ...incomeRows,
+    ...transferRows,
+    makeMoneyRow({ label: "Reserve", source: "Regel", description: "Reserve allocation", amount: reserve, formula: "Überschuss × Reserve-Regel" }),
+    makeMoneyRow({
+      label: "Historischer Ausgleich pausiert",
+      source: "Import",
+      description: "Old investments visible, not charged now",
+      amount: historicalAmount,
+      formula: `${historicalCount} historical rows`,
+    }),
   ];
 
   const formulaRows = [
@@ -534,12 +912,17 @@ export const buildAccountingFlowModel = ({
     links,
     detailItems,
     overviewRows,
+    auditRows,
     personRows,
     vehicleCostRows,
     livingCostRows,
     incomeRows,
-    transferRows: currentTransfers,
+    transferRows,
     formulaRows,
+    settlementGroups: {
+      dueToSharedPot: (safeProjection.suggestedSettlements || []).filter((row) => row.to_person === sharedPotAccount),
+      reimbursementsFromSharedPot: (safeProjection.suggestedSettlements || []).filter((row) => row.from_person === sharedPotAccount),
+    },
     historical: {
       amount: historicalAmount,
       rows: historicalCount,
@@ -556,6 +939,15 @@ export const buildAccountingFlowModel = ({
       potBalance,
       sollZufluss: roundMoney(numberOr(sharedPot.inflow_chf)),
       recordedPaid: roundMoney(numberOr(sharedPot.contributions_paid_chf)),
+      monthlyDueTotal,
+      totalMonthlyPaid,
+      totalPrivatePaid,
+      totalDueToSharedPot,
+      totalReimbursementsFromSharedPot,
+      externalIncome,
     },
+    hasMeaningfulData,
   };
 };
+
+export const buildAccountingFlowModel = (args = {}) => buildSankeyAccountingModel(args);

@@ -11,7 +11,11 @@ import {
   normalizeMonthlyCloseFromApi,
   sortMonthlyCloses,
 } from "./accounting";
-import { buildAccountingFlowModel } from "./accountingFlow";
+import { buildSankeyAccountingModel } from "./accountingFlow";
+import AccountingSankey, { SankeyDetailPanel } from "./accounting/AccountingSankey";
+import ForecastPanel from "./accounting/ForecastPanel";
+import PersonAccountingCards from "./accounting/PersonAccountingCards";
+import SettlementNowCard from "./accounting/SettlementNowCard";
 
 const formatChf = (value) => `CHF ${Number(value || 0).toFixed(2)}`;
 const formatSignedChf = (value) => {
@@ -199,13 +203,13 @@ function MoneyRowsTable({ rows = [], emptyText = "Keine Zeilen." }) {
       <table>
         <thead>
           <tr>
-            <th>Bereich</th>
-            <th>Datum</th>
-            <th>Quelle</th>
+            <th>Date</th>
+            <th>Source</th>
             <th>Person</th>
-            <th>Beschreibung</th>
-            <th>Rechnung</th>
-            <th>Betrag</th>
+            <th>Description</th>
+            <th>Accounting effect</th>
+            <th>Formula</th>
+            <th>Amount</th>
           </tr>
         </thead>
         <tbody>
@@ -218,11 +222,11 @@ function MoneyRowsTable({ rows = [], emptyText = "Keine Zeilen." }) {
           ) : (
             rows.map((row, index) => (
               <tr key={`${row.label}-${row.detail || row.description}-${index}`}>
-                <td>{row.label}</td>
                 <td>{row.date || "-"}</td>
                 <td>{row.source || "-"}</td>
                 <td>{row.person || "-"}</td>
                 <td className="notes-cell">{row.description || "-"}</td>
+                <td>{row.label}</td>
                 <td className="notes-cell">{row.formula || row.detail || "-"}</td>
                 <td>{formatSignedChf(row.amount)}</td>
               </tr>
@@ -284,11 +288,11 @@ function Rechenblatt({ model }) {
   return (
     <div className="accounting-tab-grid">
       <section>
-        <h3>Übersicht</h3>
+        <h3>Overview</h3>
         <MoneyRowsTable rows={model.overviewRows} />
       </section>
       <section>
-        <h3>Personen</h3>
+        <h3>People</h3>
         <div className="table-wrap calculation-table">
           <table>
             <thead>
@@ -323,11 +327,15 @@ function Rechenblatt({ model }) {
         </div>
       </section>
       <section>
-        <h3>Fahrzeug: Gas, Unterhalt, Gebühren</h3>
-        <MoneyRowsTable rows={model.vehicleCostRows} emptyText="Keine Fahrzeugkosten in diesem Zeitraum." />
+        <h3>Audit trail: where did this number come from?</h3>
+        <MoneyRowsTable rows={model.auditRows} emptyText="No source rows in this period." />
       </section>
       <section>
-        <h3>Nächte & Arbeit</h3>
+        <h3>Vehicle: gas, maintenance, fees</h3>
+        <MoneyRowsTable rows={model.vehicleCostRows} emptyText="No vehicle costs in this period." />
+      </section>
+      <section>
+        <h3>Nights & work</h3>
         <MoneyRowsTable
           rows={model.personRows.flatMap((row) => [
             {
@@ -352,8 +360,8 @@ function Rechenblatt({ model }) {
         />
       </section>
       <section>
-        <h3>Wohn-/Ausbaukosten</h3>
-        <MoneyRowsTable rows={model.livingCostRows} emptyText="Keine Wohn-/Arbeitskosten in diesem Zeitraum." />
+        <h3>Living / Ausbau costs</h3>
+        <MoneyRowsTable rows={model.livingCostRows} emptyText="No living/work costs in this period." />
       </section>
     </div>
   );
@@ -553,8 +561,8 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
   const projection = apiProjectionMatchesSettings ? apiProjection : localProjection;
   const previewUsesUnsavedSettings = Boolean(apiProjection && apiProjection.period === period && !apiProjectionMatchesSettings);
   const flowModel = useMemo(
-    () => buildAccountingFlowModel({ projection, costEntries, fuelEntries, people, period, settings }),
-    [costEntries, flowModelKey(projection), fuelEntries, people, period, settings],
+    () => buildSankeyAccountingModel({ projection, costEntries, fuelEntries, trips, bookings, workEntries, people, period, settings }),
+    [bookings, costEntries, flowModelKey(projection), fuelEntries, people, period, settings, trips, workEntries],
   );
   const selectedDetail = flowModel.detailItems[selectedFlowId] || flowModel.detailItems.overview;
   const existingClose = isCurrentOpenPeriod ? null : monthlyCloses.find((close) => close.period === period);
@@ -574,7 +582,6 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
 
   const handleSelectFlow = (id) => {
     setSelectedFlowId(id);
-    setActiveDetailTab("drilldown");
   };
 
   const handleSettingChange = (event) => {
@@ -647,47 +654,92 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
     }
   };
 
+  const periodControls = (
+    <div className="flow-controls">
+      <label className="field">
+        <span>Period</span>
+        <select value={periodMode} onChange={(event) => setPeriodMode(event.target.value)}>
+          <option value="current_open">Current open period</option>
+          <option value="month">Single month</option>
+        </select>
+      </label>
+      {periodMode === "month" && (
+        <label className="field">
+          <span>Month</span>
+          <input type="month" value={monthPeriod} onChange={(event) => setMonthPeriod(event.target.value)} />
+        </label>
+      )}
+      <div className="form-actions flow-actions">
+        <button className="cancel" type="button" onClick={handleSaveMonthlyClose} disabled={Boolean(isCurrentOpenPeriod || existingClose || previewUsesUnsavedSettings)}>
+          {closeButtonLabel}
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="panel-grid accounting-flow-page">
-      <section className="card full-span flow-overview-card">
-        <header className="flow-header">
-          <div>
-            <p className="eyebrow">Doppelte Buchhaltung</p>
-            <h1>Übersicht: wohin fliesst was?</h1>
-            <p className="subtitle">{periodLabel}. Historischer Ausgleich bleibt separat.</p>
-          </div>
-          <div className="flow-kpi-strip">
-            <span><strong>{formatChf(flowModel.totals.sollZufluss)}</strong> Soll-Zufluss</span>
-            <span><strong>{formatChf(flowModel.totals.currentCostTotal)}</strong> aktuelle Kosten</span>
-            <span><strong>{formatSignedChf(flowModel.totals.potBalance)}</strong> Rest</span>
-          </div>
+      <SettlementNowCard projection={projection} model={flowModel} periodLabel={periodLabel} controls={periodControls} status={status} />
+
+      <section className="card full-span accounting-story-card">
+        <header>
+          <p className="eyebrow">How to read this</p>
+          <h2>The accounting story</h2>
         </header>
-        {status.state !== "idle" && <div className={`status ${status.state}`}>{status.message}</div>}
-        <div className="flow-controls">
-          <label className="field">
-            <span>Zeitraum</span>
-            <select value={periodMode} onChange={(event) => setPeriodMode(event.target.value)}>
-              <option value="current_open">Offener Zeitraum</option>
-              <option value="month">Einzelner Monat</option>
-            </select>
-          </label>
-          {periodMode === "month" && (
-            <label className="field">
-              <span>Monat</span>
-              <input type="month" value={monthPeriod} onChange={(event) => setMonthPeriod(event.target.value)} />
-            </label>
-          )}
-          <div className="form-actions flow-actions">
-            <button
-              className="cancel"
-              type="button"
-              onClick={handleSaveMonthlyClose}
-              disabled={Boolean(isCurrentOpenPeriod || existingClose || previewUsesUnsavedSettings)}
-            >
-              {closeButtonLabel}
-            </button>
-          </div>
+        <div className="story-grid">
+          <article>
+            <strong>1. Monthly base keeps the van alive.</strong>
+            <p>Everyone contributes to predictable fixed costs and reserve.</p>
+          </article>
+          <article>
+            <strong>2. Usage pays for actual use.</strong>
+            <p>Kilometres fund vehicle wear and fuel. Nights split between vehicle and living/Ausbau.</p>
+          </article>
+          <article>
+            <strong>3. Private payments are credited.</strong>
+            <p>If someone pays gas or repairs personally, the shared pot owes them back.</p>
+          </article>
+          <article>
+            <strong>4. Work is not cash.</strong>
+            <p>Work reduces living/night charges first, but it does not create money in the bank account.</p>
+          </article>
+          <article>
+            <strong>5. Historical investment is paused.</strong>
+            <p>Old investments are shown for transparency but not automatically paid back this period.</p>
+          </article>
         </div>
+      </section>
+
+      <AccountingSankey model={flowModel} selectedId={selectedFlowId} onSelect={handleSelectFlow} />
+      <SankeyDetailPanel detail={selectedDetail} />
+      <PersonAccountingCards model={flowModel} />
+      <ForecastPanel settings={flowModel.settings} people={people} />
+
+      <section className="card full-span table-card accounting-detail-card">
+        <header>
+          <p className="eyebrow">E. Rechenblatt / audit trail</p>
+          <h2>How exactly was this calculated?</h2>
+        </header>
+        <div className="detail-tabs" role="tablist" aria-label="Accounting detail views">
+          {[
+            ["rechenblatt", "Rechenblatt"],
+            ["formeln", "Formeln"],
+          ].map(([id, label]) => (
+            <button key={id} type="button" className={`detail-tab ${activeDetailTab === id ? "active" : ""}`} onClick={() => setActiveDetailTab(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {activeDetailTab === "rechenblatt" && <Rechenblatt model={flowModel} />}
+        {activeDetailTab === "formeln" && <Formeln model={flowModel} />}
+      </section>
+
+      <section className="card full-span settings-card">
+        <header>
+          <p className="eyebrow">F. Settings / assumptions</p>
+          <h2>Accounting rules</h2>
+          <p className="subtitle">These are the real rates used by the current projection.</p>
+        </header>
         <details className="rules-panel">
           <summary>Regeln</summary>
           <div className="inline-grid four-col compact-settings">
@@ -712,11 +764,11 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
               <input name="reserve_target_chf" type="number" step="0.01" value={settings.reserve_target_chf} onChange={handleSettingChange} />
             </label>
             <label className="field">
-              <span>Überschuss Reserve (%)</span>
+              <span>Ueberschuss Reserve (%)</span>
               <input name="surplus_reserve_percent" type="number" step="1" value={settings.surplus_reserve_percent} onChange={handleSettingChange} />
             </label>
             <label className="field">
-              <span>Überschuss Historisch (%)</span>
+              <span>Ueberschuss Historisch (%)</span>
               <input
                 name="surplus_historical_repayment_percent"
                 type="number"
@@ -731,33 +783,9 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
               </button>
             </div>
           </div>
-          {previewUsesUnsavedSettings && <p className="subtitle">Lokale Vorschau mit ungespeicherten Regeln.</p>}
-          {existingClose && <p className="subtitle">Gespeicherter Abschluss für {period}: {formatClosedSourceCounts(existingClose.entryCounts)}.</p>}
+          {previewUsesUnsavedSettings && <p className="subtitle">Local preview with unsaved rules.</p>}
+          {existingClose && <p className="subtitle">Saved close for {period}: {formatClosedSourceCounts(existingClose.entryCounts)}.</p>}
         </details>
-        <FlowChart model={flowModel} selectedId={selectedFlowId} onSelect={handleSelectFlow} />
-      </section>
-
-      <PaymentTable projection={projection} recordedPaid={flowModel.totals.recordedPaid} />
-
-      <section className="card full-span table-card accounting-detail-card">
-        <header>
-          <p className="eyebrow">Details</p>
-          <h2>Rechnung nachvollziehen</h2>
-        </header>
-        <div className="detail-tabs" role="tablist" aria-label="Accounting detail views">
-          {[
-            ["rechenblatt", "Rechenblatt"],
-            ["drilldown", "Drilldown"],
-            ["formeln", "Formeln"],
-          ].map(([id, label]) => (
-            <button key={id} type="button" className={`detail-tab ${activeDetailTab === id ? "active" : ""}`} onClick={() => setActiveDetailTab(id)}>
-              {label}
-            </button>
-          ))}
-        </div>
-        {activeDetailTab === "rechenblatt" && <Rechenblatt model={flowModel} />}
-        {activeDetailTab === "drilldown" && <Drilldown detail={selectedDetail} />}
-        {activeDetailTab === "formeln" && <Formeln model={flowModel} />}
       </section>
 
       <AuditDetails projection={projection} monthlyCloses={monthlyCloses} />
