@@ -27,7 +27,8 @@ describe("buildSankeyAccountingModel", () => {
     expect(nic.kmCharge).toBe(60);
     expect(nic.vehicleFunding).toBe(60);
     expect(nic.livingFunding).toBe(0);
-    expect(model.links.find((link) => link.id === "person:Nic:km").amount).toBe(60);
+    expect(model.links.find((link) => link.id === "person:Nic:usage").amount).toBe(60);
+    expect(model.links.find((link) => link.id === "usage:km").amount).toBe(60);
     expect(model.links.find((link) => link.id === "km:vehicle").amount).toBe(60);
     expect(model.links.find((link) => link.id === "person:Nic:night_living")).toBeUndefined();
   });
@@ -41,10 +42,10 @@ describe("buildSankeyAccountingModel", () => {
     expect(luki.nightCharge).toBe(150);
     expect(luki.nightVehicle).toBe(75);
     expect(luki.nightLiving).toBe(75);
-    expect(model.links.find((link) => link.id === "person:Luki:night_vehicle").amount).toBe(75);
-    expect(model.links.find((link) => link.id === "person:Luki:night_living").amount).toBe(75);
-    expect(model.links.find((link) => link.id === "night-vehicle:vehicle").amount).toBe(75);
-    expect(model.links.find((link) => link.id === "night-living:living").amount).toBe(75);
+    expect(model.links.find((link) => link.id === "person:Luki:usage").amount).toBe(150);
+    expect(model.links.find((link) => link.id === "usage:nights").amount).toBe(150);
+    expect(model.links.find((link) => link.id === "nights:vehicle").amount).toBe(75);
+    expect(model.links.find((link) => link.id === "nights:living").amount).toBe(75);
   });
 
   it("keeps gas rows in vehicle costs without requiring a Costs entry duplicate", () => {
@@ -114,7 +115,7 @@ describe("buildSankeyAccountingModel", () => {
 
     expect(model.settlementGroups.dueToSharedPot.length).toBeGreaterThan(0);
     expect(model.settlementGroups.reimbursementsFromSharedPot.length).toBeGreaterThan(0);
-    expect(model.links.some((link) => link.category === "still_due")).toBe(true);
-    expect(model.links.some((link) => link.category === "reimbursement")).toBe(true);
+    expect(model.links.some((link) => link.category === "still_due")).toBe(false);
+    expect(model.nodes.some((node) => node.id.startsWith("settle:"))).toBe(false);
   });
 });

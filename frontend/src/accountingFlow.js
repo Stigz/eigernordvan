@@ -360,6 +360,33 @@ export const buildSankeyAccountingModel = ({
   };
 
   personRows.forEach((row) => {
+    const usageTotal = roundMoney(row.kmCharge + row.nightCharge);
+    const personUsageRows = [];
+    if (row.kmCharge > 0) {
+      personUsageRows.push(
+        makeMoneyRow({
+          label: "Kilometer",
+          person: row.person,
+          source: "KM",
+          description: "Distanzbasierte Fahrzeugnutzung",
+          amount: row.kmCharge,
+          formula: `${row.km.toFixed(1)} km × CHF ${normalizedSettings.km_rate_chf.toFixed(2)}`,
+        }),
+      );
+    }
+    if (row.nightCharge > 0) {
+      personUsageRows.push(
+        makeMoneyRow({
+          label: "Nächte",
+          person: row.person,
+          source: "Booking",
+          description: "Übernachtungen, 50/50 Fahrzeug und Ausbau",
+          amount: row.nightCharge,
+          formula: `${row.nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)}`,
+        }),
+      );
+    }
+
     pushLink({
       id: `person:${row.person}:monthly`,
       from: `person:${row.person}`,
@@ -379,58 +406,15 @@ export const buildSankeyAccountingModel = ({
       explanation: "Monthly base keeps predictable fixed costs and the shared konto alive.",
     });
     pushLink({
-      id: `person:${row.person}:km`,
+      id: `person:${row.person}:usage`,
       from: `person:${row.person}`,
-      to: "charge:km",
-      label: `${row.person} km`,
-      amount: row.kmCharge,
-      tone: "vehicle",
-      category: "km",
-      rows: [
-        makeMoneyRow({
-          label: "Kilometer",
-          person: row.person,
-          amount: row.kmCharge,
-          formula: `${row.km.toFixed(1)} km × CHF ${normalizedSettings.km_rate_chf.toFixed(2)}`,
-        }),
-      ],
-      explanation: "Distance usage funds the vehicle pot for wear, diesel, service, and vehicle fees.",
-    });
-    pushLink({
-      id: `person:${row.person}:night_vehicle`,
-      from: `person:${row.person}`,
-      to: "charge:night-vehicle",
-      label: `${row.person} nights vehicle share`,
-      amount: row.nightVehicle,
-      tone: "vehicle",
-      category: "night_vehicle",
-      rows: [
-        makeMoneyRow({
-          label: "1/2 Nächte",
-          person: row.person,
-          amount: row.nightVehicle,
-          formula: `${row.nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)} ÷ 2`,
-        }),
-      ],
-      explanation: "Half of night usage helps cover the vehicle side because overnight use still consumes the van.",
-    });
-    pushLink({
-      id: `person:${row.person}:night_living`,
-      from: `person:${row.person}`,
-      to: "charge:night-living",
-      label: `${row.person} nights living share`,
-      amount: row.livingFunding,
-      tone: "living",
-      category: "night_living",
-      rows: [
-        makeMoneyRow({
-          label: "1/2 Nächte",
-          person: row.person,
-          amount: row.nightLiving,
-          formula: `${row.nights.toFixed(1)} Nächte × CHF ${normalizedSettings.night_rate_chf.toFixed(2)} ÷ 2`,
-        }),
-      ],
-      explanation: "Half of night usage funds living/Ausbau and can be offset by work credit.",
+      to: "charge:usage",
+      label: `${row.person} usage`,
+      amount: usageTotal,
+      tone: "usage",
+      category: "usage",
+      rows: personUsageRows,
+      explanation: "Usage is first gathered per person, then split into kilometres and nights so the chart stays readable.",
     });
     pushLink({
       id: `person:${row.person}:work`,
@@ -475,24 +459,6 @@ export const buildSankeyAccountingModel = ({
       ],
       explanation: "Private payments are credited because the shared pot owes that person back.",
     });
-    pushLink({
-      id: `person:${row.person}:still_due`,
-      from: `person:${row.person}`,
-      to: "settle:due",
-      label: `${row.person} must pay now`,
-      amount: row.suggestedDue,
-      tone: "settlement",
-      category: "still_due",
-      rows: [
-        makeMoneyRow({
-          label: "Must pay now",
-          person: row.person,
-          amount: row.suggestedDue,
-          formula: "Suggested settlement into shared pot",
-        }),
-      ],
-      explanation: "This is the real cash movement still needed now.",
-    });
   });
 
   pushLink({
@@ -507,6 +473,28 @@ export const buildSankeyAccountingModel = ({
     explanation: "Base payments are the predictable monthly obligation for the shared konto.",
   });
   pushLink({
+    id: "usage:km",
+    from: "charge:usage",
+    to: "charge:km",
+    label: "Usage → kilometres",
+    amount: kmChargeTotal,
+    tone: "vehicle",
+    category: "km",
+    rows: usageRows.filter((row) => row.label === "Kilometer"),
+    explanation: "The kilometre part of usage is separated before it funds the vehicle pot.",
+  });
+  pushLink({
+    id: "usage:nights",
+    from: "charge:usage",
+    to: "charge:nights",
+    label: "Usage → nights",
+    amount: roundMoney(nightVehicleTotal + nightLivingTotal),
+    tone: "living",
+    category: "night",
+    rows: usageRows.filter((row) => row.label === "Nächte"),
+    explanation: "Night usage is separated, then split exactly 50/50 into vehicle and living/Ausbau.",
+  });
+  pushLink({
     id: "km:vehicle",
     from: "charge:km",
     to: "pot:vehicle",
@@ -518,8 +506,8 @@ export const buildSankeyAccountingModel = ({
     explanation: "All kilometre charges fund the vehicle pot.",
   });
   pushLink({
-    id: "night-vehicle:vehicle",
-    from: "charge:night-vehicle",
+    id: "nights:vehicle",
+    from: "charge:nights",
     to: "pot:vehicle",
     label: "Half nights → vehicle pot",
     amount: nightVehicleTotal,
@@ -536,8 +524,8 @@ export const buildSankeyAccountingModel = ({
     explanation: "Night charges are split 50/50: half helps the vehicle pot.",
   });
   pushLink({
-    id: "night-living:living",
-    from: "charge:night-living",
+    id: "nights:living",
+    from: "charge:nights",
     to: "pot:living",
     label: "Half nights → living pot",
     amount: nightLivingTotal,
@@ -632,26 +620,6 @@ export const buildSankeyAccountingModel = ({
     explanation: "Cash left after current policy.",
   });
   pushLink({
-    id: "shared:reimbursements",
-    from: "pot:shared",
-    to: "settle:reimburse",
-    label: "Gets reimbursed",
-    amount: totalReimbursementsFromSharedPot,
-    tone: "settlement",
-    category: "reimbursement",
-    rows: personRows
-      .filter((row) => row.suggestedReceivable > 0)
-      .map((row) =>
-        makeMoneyRow({
-          label: "Gets reimbursed",
-          person: row.person,
-          amount: row.suggestedReceivable,
-          formula: "Shared pot → person",
-        }),
-      ),
-    explanation: "These are real reimbursements from the shared konto.",
-  });
-  pushLink({
     id: "history:paused",
     from: "pot:history",
     to: "out:history",
@@ -678,78 +646,84 @@ export const buildSankeyAccountingModel = ({
       kind: "person",
       column: 0,
       tone: "person",
-      amount: roundMoney(row.monthlyDue + row.usageTotal + row.privatePaid),
-      detail: `${row.km.toFixed(1)} km, ${row.nights.toFixed(1)} nights`,
+      amount: roundMoney(row.monthlyDue + row.kmCharge + row.nightCharge + row.privatePaid),
+      detail: `${row.km.toFixed(1)} km, ${row.nights.toFixed(1)} Nächte`,
       explanation: row.resultLabel,
     })),
     {
       id: externalIncomeNode,
-      label: "External income",
+      label: "Einnahmen",
       kind: "source",
       column: 0,
       tone: "income",
       amount: externalIncome,
-      detail: "Rentals / income",
+      detail: "Miete / Einnahmen",
       hiddenWhenZero: true,
     },
-    { id: "charge:monthly", label: "Monthly base", kind: "charge", column: 1, tone: "monthly", amount: monthlyDueTotal, detail: "Fixed contribution" },
-    { id: "charge:km", label: "Kilometres", kind: "charge", column: 1, tone: "vehicle", amount: kmChargeTotal, detail: "km × rate" },
-    { id: "charge:night-vehicle", label: "1/2 nights vehicle", kind: "charge", column: 1, tone: "vehicle", amount: nightVehicleTotal, detail: "night split" },
-    { id: "charge:night-living", label: "1/2 nights living", kind: "charge", column: 1, tone: "living", amount: nightLivingTotal, detail: "night split" },
-    { id: "charge:work", label: "Work credit", kind: "charge", column: 1, tone: "work", amount: totalWorkUsed, detail: "internal, not cash" },
-    { id: "charge:private-paid", label: "Already paid privately", kind: "charge", column: 1, tone: "reimbursement", amount: totalPrivatePaid, detail: "creates credit" },
+    { id: "charge:monthly", label: "Monatsbeitrag", kind: "charge", column: 1, tone: "monthly", amount: monthlyDueTotal, detail: "fixer Beitrag" },
+    {
+      id: "charge:usage",
+      label: "Nutzung",
+      kind: "charge",
+      column: 1,
+      tone: "usage",
+      amount: roundMoney(kmChargeTotal + nightVehicleTotal + nightLivingTotal),
+      detail: "km + Nächte",
+    },
+    { id: "charge:km", label: "Kilometer", kind: "charge", column: 1, tone: "vehicle", amount: kmChargeTotal, detail: "km × Rate" },
+    {
+      id: "charge:nights",
+      label: "Nächte",
+      kind: "charge",
+      column: 1,
+      tone: "living",
+      amount: roundMoney(nightVehicleTotal + nightLivingTotal),
+      detail: "50/50 geteilt",
+    },
+    { id: "charge:work", label: "Arbeit", kind: "charge", column: 1, tone: "work", amount: totalWorkUsed, detail: "intern, kein Cash" },
+    { id: "charge:private-paid", label: "Privat bezahlt", kind: "charge", column: 1, tone: "reimbursement", amount: totalPrivatePaid, detail: "Gutschrift" },
     {
       id: "pot:vehicle",
-      label: "Vehicle pot",
+      label: "Fahrzeug",
       kind: "pot",
       column: 2,
       tone: "vehicle",
       amount: roundMoney(numberOr(vehiclePot.usage_funding_chf)),
-      detail: "km + 1/2 nights",
+      detail: "km + 1/2 Nächte",
     },
     {
       id: "pot:living",
-      label: "Living / Ausbau pot",
+      label: "Nächte & Arbeit",
       kind: "pot",
       column: 2,
       tone: "living",
       amount: roundMoney(numberOr(livingPot.usage_funding_chf)),
-      detail: "1/2 nights + work",
+      detail: "1/2 Nächte + Arbeit",
     },
     {
       id: "pot:shared",
-      label: "Shared pot",
+      label: "Gemeinsames Konto",
       kind: "pot",
       column: 2,
       tone: "shared",
       amount: roundMoney(numberOr(sharedPot.inflow_chf)),
-      detail: "real konto",
+      detail: "realer Geldtopf",
     },
     {
       id: "pot:history",
-      label: "Historical investment",
+      label: "Historischer Ausgleich",
       kind: "history",
       column: 2,
       tone: "history",
       amount: historicalAmount,
-      detail: "paused",
+      detail: "pausiert",
     },
-    { id: "out:vehicle-costs", label: "Vehicle costs", kind: "output", column: 3, tone: "vehicle", amount: vehicleCosts, detail: "gas, service, fees" },
-    { id: "out:living-costs", label: "Living / Ausbau costs", kind: "output", column: 3, tone: "living", amount: livingCosts, detail: "interior + work" },
+    { id: "out:vehicle-costs", label: "Fahrzeugkosten", kind: "output", column: 3, tone: "vehicle", amount: vehicleCosts, detail: "Gas, Service, Gebühren" },
+    { id: "out:living-costs", label: "Ausbaukosten", kind: "output", column: 3, tone: "living", amount: livingCosts, detail: "Innenraum + Arbeit" },
     { id: "out:reserve", label: "Reserve", kind: "output", column: 3, tone: "reserve", amount: reserve, detail: "future safety" },
-    { id: "out:balance", label: "Remaining balance", kind: "output", column: 3, tone: "balance", amount: potBalance, detail: "cash left" },
-    { id: "out:reimbursements", label: "Private payments credited", kind: "output", column: 3, tone: "reimbursement", amount: totalPrivatePaid, detail: "already paid" },
-    { id: "out:history", label: "Later repayment", kind: "history", column: 3, tone: "history", amount: historicalAmount, detail: "not active" },
-    { id: "settle:due", label: "Must pay now", kind: "settlement", column: 4, tone: "settlement", amount: totalDueToSharedPot, detail: "into shared pot" },
-    {
-      id: "settle:reimburse",
-      label: "Gets reimbursed",
-      kind: "settlement",
-      column: 4,
-      tone: "settlement",
-      amount: totalReimbursementsFromSharedPot,
-      detail: "from shared pot",
-    },
+    { id: "out:balance", label: "Rest im Konto", kind: "output", column: 3, tone: "balance", amount: potBalance, detail: "Cash bleibt" },
+    { id: "out:reimbursements", label: "Private Gutschrift", kind: "output", column: 3, tone: "reimbursement", amount: totalPrivatePaid, detail: "bereits bezahlt" },
+    { id: "out:history", label: "Späterer Ausgleich", kind: "history", column: 3, tone: "history", amount: historicalAmount, detail: "nicht aktiv" },
   ].filter((node) => !node.hiddenWhenZero || Number(node.amount || 0) > 0);
 
   addDetail(detailItems, "overview", {
@@ -777,6 +751,37 @@ export const buildSankeyAccountingModel = ({
         makeMoneyRow({ label: "Saldo", person: row.person, amount: row.balance, formula: "Projektion aus Konto, Nutzung, Kosten und Arbeit" }),
       ],
     });
+  });
+
+  addDetail(detailItems, "charge:usage", {
+    title: "Nutzung",
+    subtitle: "Alle persönlichen km- und Nachtkosten werden hier gesammelt und danach sauber aufgeteilt.",
+    amount: roundMoney(kmChargeTotal + nightVehicleTotal + nightLivingTotal),
+    rows: usageRows,
+  });
+  addDetail(detailItems, "charge:km", {
+    title: "Kilometer",
+    subtitle: "KM finanzieren nur den Fahrzeugtopf.",
+    amount: kmChargeTotal,
+    rows: usageRows.filter((row) => row.label === "Kilometer"),
+  });
+  addDetail(detailItems, "charge:nights", {
+    title: "Nächte",
+    subtitle: "Nächte werden 50/50 auf Fahrzeug und Nächte & Arbeit geteilt.",
+    amount: roundMoney(nightVehicleTotal + nightLivingTotal),
+    rows: usageRows.filter((row) => row.label === "Nächte"),
+  });
+  addDetail(detailItems, "charge:work", {
+    title: "Arbeit",
+    subtitle: "Interner Credit: reduziert Nachtkosten zuerst, kein automatischer Cash-Payout.",
+    amount: totalWorkUsed,
+    rows: workRows,
+  });
+  addDetail(detailItems, "charge:private-paid", {
+    title: "Privat bezahlt",
+    subtitle: "Gas oder gemeinsame Kosten, die schon jemand privat übernommen hat.",
+    amount: totalPrivatePaid,
+    rows: [...vehicleCostRows, ...livingCostRows].filter((row) => row.formula.includes("Privat bezahlt")),
   });
 
   addDetail(detailItems, "pot:vehicle", {
