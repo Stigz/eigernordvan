@@ -2108,21 +2108,35 @@ th {
   background: #fff;
 }
 
-.missed-gas-toggle {
-  border: 1px solid #f59e0b;
+.entry-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
   border-radius: 14px;
-  padding: 12px 14px;
-  background: #fffbeb;
-  color: #92400e;
+  background: #f1f5f9;
+}
+
+.entry-mode-switch button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: transparent;
+  color: #475569;
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
-  text-align: left;
 }
 
-.missed-gas-toggle.active {
-  background: #fef3c7;
-  color: #78350f;
+.entry-mode-switch button.active {
+  background: #ffffff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+
+.field-hint {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .note-cell {
