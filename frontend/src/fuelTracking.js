@@ -2,6 +2,13 @@ const timestampValue = (entry) => new Date(entry?.timestamp || "").getTime();
 
 export const hasKnownOdometer = (entry) => Number.isFinite(entry?.odometer_km) && entry.odometer_km > 0;
 
+export const fuelEfficiencyStatus = (entry) => {
+  if (!entry?.missed) {
+    return "Eligible for km/L";
+  }
+  return hasKnownOdometer(entry) ? "Interval skipped" : "Interval skipped · km missing";
+};
+
 export const compareFuelEntriesByTime = (a, b) => timestampValue(a) - timestampValue(b);
 
 export const compareKnownFuelEntriesByOdometer = (a, b) => {

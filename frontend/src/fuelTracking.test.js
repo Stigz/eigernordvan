@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findNeighboringKnownFills, missedMarkerFallsBetweenFills } from "./fuelTracking";
+import { findNeighboringKnownFills, fuelEfficiencyStatus, missedMarkerFallsBetweenFills } from "./fuelTracking";
 
 const previousFill = { id: "previous", timestamp: "2026-07-01T10:00:00Z", odometer_km: 1000, missed: false };
 const currentFill = { id: "current", timestamp: "2026-07-10T10:00:00Z", odometer_km: 1500, missed: false };
@@ -28,5 +28,19 @@ describe("findNeighboringKnownFills", () => {
       previous: previousFill,
       next: currentFill,
     });
+  });
+});
+
+describe("fuelEfficiencyStatus", () => {
+  it("marks recorded fills as eligible for efficiency calculations", () => {
+    expect(fuelEfficiencyStatus(currentFill)).toBe("Eligible for km/L");
+  });
+
+  it("shows that a known missed fill skips the affected interval", () => {
+    expect(fuelEfficiencyStatus({ missed: true, odometer_km: 1250 })).toBe("Interval skipped");
+  });
+
+  it("also flags when the missed fill has no kilometer reading", () => {
+    expect(fuelEfficiencyStatus({ missed: true, odometer_km: null })).toBe("Interval skipped · km missing");
   });
 });

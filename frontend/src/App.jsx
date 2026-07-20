@@ -18,6 +18,7 @@ import {
   compareFuelEntriesByTime,
   compareKnownFuelEntriesByOdometer,
   findNeighboringKnownFills,
+  fuelEfficiencyStatus,
   hasKnownOdometer,
   missedMarkerFallsBetweenFills,
 } from "./fuelTracking";
@@ -2582,21 +2583,9 @@ export default function App() {
             <section className="card">
               <header>
                 <p className="eyebrow">Diesel ledger</p>
-                <h1>{gasEditId ? "Edit diesel entry" : gasForm.missed ? "Missed fill marker" : "Record diesel fill"}</h1>
-                <p className="subtitle">
-                  {gasForm.missed
-                    ? "Just mark that a fill happened. Add an approximate odometer or note only if you know them."
-                    : "Record the receipt and odometer so cost and efficiency stay accurate."}
-                </p>
+                <h1>{gasEditId ? "Edit diesel entry" : "Record diesel fill"}</h1>
+                <p className="subtitle">Record a fill, or mark a missed full tank so km/L stays accurate.</p>
               </header>
-              <div className="entry-mode-switch" role="group" aria-label="Diesel entry type">
-                <button type="button" className={!gasForm.missed ? "active" : ""} onClick={() => handleSetMissedGas(false)}>
-                  Record a fill
-                </button>
-                <button type="button" className={gasForm.missed ? "active" : ""} onClick={() => handleSetMissedGas(true)}>
-                  Mark a missed fill
-                </button>
-              </div>
               <form className="form" onSubmit={handleGasSubmit}>
                 <label className="field">
                   <span>User name</span>
@@ -2609,6 +2598,19 @@ export default function App() {
                     onChange={handleGasChange}
                     required
                   />
+                </label>
+                <label className={`missed-fill-check${gasForm.missed ? " active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={gasForm.missed}
+                    onChange={(event) => handleSetMissedGas(event.target.checked)}
+                  />
+                  <span>
+                    <strong>Missed full fill</strong>
+                    <small>
+                      Check this if a full tank happened but was not recorded. The affected km/L interval will be skipped.
+                    </small>
+                  </span>
                 </label>
                 {!gasForm.missed && (
                   <Fragment>
@@ -2658,7 +2660,7 @@ export default function App() {
                   </Fragment>
                 )}
                 <label className="field">
-                  <span>{gasForm.missed ? "Approx. odometer (optional)" : "Odometer (km)"}</span>
+                  <span>{gasForm.missed ? "Odometer (km, recommended)" : "Odometer (km)"}</span>
                   <input
                     type="number"
                     name="odometer_km"
@@ -2670,7 +2672,11 @@ export default function App() {
                     onChange={handleGasChange}
                     required={!gasForm.missed}
                   />
-                  {gasForm.missed && <small className="field-hint">No kilometer reading is needed to save the marker.</small>}
+                  {gasForm.missed && (
+                    <small className="field-hint">
+                      Leave blank if unknown. The table will flag the missing kilometers and the affected interval stays skipped.
+                    </small>
+                  )}
                 </label>
                 <label className="field">
                   <span>Note (optional)</span>
@@ -2690,7 +2696,7 @@ export default function App() {
                       : gasEditId
                         ? "Update diesel entry"
                         : gasForm.missed
-                          ? "Save marker"
+                          ? "Save missed fill"
                           : "Save diesel entry"}
                   </button>
                   {gasEditId && (
@@ -2723,6 +2729,7 @@ export default function App() {
                         <th>CHF</th>
                         <th>Odometer</th>
                         <th>CHF/L</th>
+                        <th>Efficiency</th>
                         <th>Note</th>
                         <th>Actions</th>
                       </tr>
@@ -2730,7 +2737,7 @@ export default function App() {
                     <tbody>
                       {sortedGasEntries.length === 0 ? (
                         <tr>
-                          <td colSpan="9" className="empty-cell">
+                          <td colSpan="10" className="empty-cell">
                             {gasTableState.state === "loading" ? "Loading..." : "No fuel entries yet."}
                           </td>
                         </tr>
@@ -2739,11 +2746,12 @@ export default function App() {
                           <tr key={entry.id}>
                             <td>{new Date(entry.timestamp).toLocaleString()}</td>
                             <td>{entry.user_name}</td>
-                            <td>{entry.missed ? "Missed fill marker" : "Diesel fill"}</td>
+                            <td>{entry.missed ? "Missed full fill" : "Diesel fill"}</td>
                             <td>{entry.missed ? "—" : entry.liters.toFixed(2)}</td>
                             <td>{entry.missed ? "—" : entry.cost_chf.toFixed(2)}</td>
                             <td>{entry.odometer_km === null ? "—" : entry.odometer_km.toFixed(1)}</td>
                             <td>{entry.missed ? "—" : (entry.cost_chf / entry.liters).toFixed(2)}</td>
+                            <td>{fuelEfficiencyStatus(entry)}</td>
                             <td className="note-cell">{entry.note || "—"}</td>
                             <td>
                               <div className="row-actions">
