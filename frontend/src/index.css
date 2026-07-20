@@ -2108,30 +2108,42 @@ th {
   background: #fff;
 }
 
-.entry-mode-switch {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 5px;
+.missed-fill-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
   border-radius: 14px;
-  background: #f1f5f9;
-}
-
-.entry-mode-switch button {
-  border: 0;
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: transparent;
-  color: #475569;
-  font-size: 14px;
-  font-weight: 700;
+  background: #f8fafc;
   cursor: pointer;
 }
 
-.entry-mode-switch button.active {
-  background: #ffffff;
-  color: #1d4ed8;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+.missed-fill-check.active {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.missed-fill-check input {
+  width: auto;
+  margin-top: 3px;
+  accent-color: #d97706;
+}
+
+.missed-fill-check span {
+  display: grid;
+  gap: 3px;
+}
+
+.missed-fill-check strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.missed-fill-check small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .field-hint {
