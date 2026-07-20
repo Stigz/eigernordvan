@@ -5,7 +5,7 @@ import "testing"
 func TestValidateFuelAcceptsValidPayload(t *testing.T) {
 	err := validateFuel(fuelRequest{
 		UserName:    "Nic",
-		OdometerKM:  12345.6,
+		OdometerKM:  floatPtr(12345.6),
 		Liters:      52.4,
 		FuelCostCHF: 101.8,
 	})
@@ -17,7 +17,7 @@ func TestValidateFuelAcceptsValidPayload(t *testing.T) {
 func TestValidateFuelRejectsMissingUserName(t *testing.T) {
 	err := validateFuel(fuelRequest{
 		UserName:    "",
-		OdometerKM:  12345.6,
+		OdometerKM:  floatPtr(12345.6),
 		Liters:      52.4,
 		FuelCostCHF: 101.8,
 	})
@@ -29,7 +29,7 @@ func TestValidateFuelRejectsMissingUserName(t *testing.T) {
 func TestValidateFuelRejectsNonPositiveValues(t *testing.T) {
 	err := validateFuel(fuelRequest{
 		UserName:    "Nic",
-		OdometerKM:  -1,
+		OdometerKM:  floatPtr(-1),
 		Liters:      0,
 		FuelCostCHF: 0,
 	})
@@ -38,25 +38,49 @@ func TestValidateFuelRejectsNonPositiveValues(t *testing.T) {
 	}
 }
 
-func TestValidateFuelAcceptsMissedEntryWithNote(t *testing.T) {
+func TestValidateFuelAcceptsMissedEntryWithoutOdometerOrNote(t *testing.T) {
 	err := validateFuel(fuelRequest{
-		UserName:   "Nic",
-		OdometerKM: 12345.6,
-		Missed:     true,
-		Note:       "Forgot to record a full tank in Italy.",
+		UserName: "Nic",
+		Missed:   true,
 	})
 	if err != nil {
-		t.Fatalf("expected missed fuel payload with note to be valid, got %v", err)
+		t.Fatalf("expected a simple missed fuel marker to be valid, got %v", err)
 	}
 }
 
-func TestValidateFuelRejectsMissedEntryWithoutNote(t *testing.T) {
+func TestValidateFuelAcceptsMissedEntryWithOptionalOdometer(t *testing.T) {
 	err := validateFuel(fuelRequest{
 		UserName:   "Nic",
-		OdometerKM: 12345.6,
+		OdometerKM: floatPtr(12345.6),
+		Missed:     true,
+	})
+	if err != nil {
+		t.Fatalf("expected missed fuel marker with optional odometer to be valid, got %v", err)
+	}
+}
+
+func TestValidateFuelRejectsInvalidOptionalOdometerForMissedEntry(t *testing.T) {
+	err := validateFuel(fuelRequest{
+		UserName:   "Nic",
+		OdometerKM: floatPtr(-1),
 		Missed:     true,
 	})
 	if err == nil {
-		t.Fatalf("expected missed fuel payload without note to fail validation")
+		t.Fatalf("expected invalid optional odometer to fail validation")
+	}
+}
+
+func TestEventRecordConvertsMissedMarkerWithoutMeasurements(t *testing.T) {
+	record, ok := (eventRecord{
+		ID:        "marker-1",
+		Timestamp: "2026-07-20T12:00:00Z",
+		UserName:  "Nic",
+		EventType: "fuel_missed",
+	}).asFuel()
+	if !ok {
+		t.Fatalf("expected marker without measurements to remain visible in the fuel ledger")
+	}
+	if record.OdometerKM != 0 || record.Liters != 0 || record.FuelCostCHF != 0 || !record.Missed {
+		t.Fatalf("unexpected missed marker conversion: %#v", record)
 	}
 }
