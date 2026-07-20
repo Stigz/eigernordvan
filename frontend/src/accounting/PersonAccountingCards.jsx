@@ -45,7 +45,7 @@ export default function PersonAccountingCards({ model }) {
             <div className="person-accounting-block">
               <p>Already paid / credited</p>
               <Line label="Monthly paid" value={formatChf(row.monthlyPaid)} />
-              <Line label="Gas / costs paid" value={formatChf(row.privatePaid)} />
+              <Line label="Diesel / costs paid" value={formatChf(row.privatePaid)} />
               <Line label="Work carried" value={formatChf(row.workCarried)} />
             </div>
             <Line label="Result" value={resultText(row)} strong />

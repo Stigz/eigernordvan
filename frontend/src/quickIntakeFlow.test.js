@@ -12,7 +12,7 @@ describe("buildKmModeOptions", () => {
 });
 
 describe("namePresets", () => {
-  it("uses fixed suggestions for KM and gas name entry", () => {
+  it("uses fixed suggestions for KM and diesel name entry", () => {
     expect(namePresets).toEqual(["Nic", "Luki", "Kayla", "Jeanne", "Vermietung"]);
   });
 });

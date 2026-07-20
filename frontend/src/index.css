@@ -629,6 +629,35 @@ th {
   gap: 10px;
 }
 
+.diesel-cost-fields {
+  grid-template-columns: minmax(0, 1fr) 110px;
+}
+
+.currency-conversion {
+  margin: -8px 0 0;
+  color: #475569;
+  font-size: 13px;
+}
+
+.currency-conversion.success {
+  color: #166534;
+}
+
+.currency-conversion.error {
+  color: #991b1b;
+}
+
+.inline-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .inline-grid.two-col {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

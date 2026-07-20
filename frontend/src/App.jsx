@@ -13,6 +13,7 @@ import {
   normalizeCostEntryForAccounting,
 } from "./accounting";
 import BookingPanel from "./booking/BookingPanel";
+import { convertToChf, fetchEurToChfRate } from "./currency";
 import { buildKmModeOptions, namePresets } from "./quickIntakeFlow";
 
 const apiUrl = import.meta.env.VITE_API_URL;
@@ -51,10 +52,40 @@ const parseOptionalNumberInput = (value) => {
 const initialGasForm = {
   user_name: "",
   liters: "",
-  cost_chf: "",
+  cost_amount: "",
+  cost_currency: "CHF",
   odometer_km: "",
   missed: false,
   note: "",
+};
+
+const CurrencyConversionNote = ({ amount, currency, exchangeRate, onRetry }) => {
+  if (currency !== "EUR") {
+    return null;
+  }
+
+  const amountCHF = convertToChf(amount, currency, exchangeRate.rate);
+  if (exchangeRate.state === "loading" || exchangeRate.state === "idle") {
+    return <p className="currency-conversion">Loading the latest EUR to CHF rate...</p>;
+  }
+  if (exchangeRate.state === "error") {
+    return (
+      <p className="currency-conversion error">
+        {exchangeRate.message}{" "}
+        <button type="button" className="inline-link" onClick={onRetry}>
+          Retry
+        </button>
+      </p>
+    );
+  }
+
+  return (
+    <p className="currency-conversion success">
+      1 EUR = {exchangeRate.rate.toFixed(4)} CHF
+      {exchangeRate.date ? ` (${exchangeRate.date})` : ""}
+      {amountCHF !== null && Number(amount) > 0 ? ` · EUR ${Number(amount).toFixed(2)} = CHF ${amountCHF.toFixed(2)}` : ""}
+    </p>
+  );
 };
 
 const corePeople = ["Nic", "Luki", "Kayla", "Jeanne"];
@@ -779,8 +810,16 @@ export default function App() {
   const [quickIntakeAction, setQuickIntakeAction] = useState("km");
   const [quickIntakeKmMode, setQuickIntakeKmMode] = useState("end");
   const [quickIntakeStage, setQuickIntakeStage] = useState("person");
-  const [quickIntakeForm, setQuickIntakeForm] = useState({ start_km: "", end_km: "", liters: "", cost_chf: "", odometer_km: "" });
+  const [quickIntakeForm, setQuickIntakeForm] = useState({
+    start_km: "",
+    end_km: "",
+    liters: "",
+    cost_amount: "",
+    cost_currency: "CHF",
+    odometer_km: "",
+  });
   const [quickIntakeStatus, setQuickIntakeStatus] = useState({ state: "idle", message: "" });
+  const [eurToChf, setEurToChf] = useState({ state: "idle", rate: null, date: "", message: "" });
   const skipNextWorkPersistRef = useRef(false);
 
   const apiBaseUrl = useMemo(() => normalizeApiBaseUrl(apiUrl), []);
@@ -790,6 +829,23 @@ export default function App() {
   );
   const quickIntakePeople = namePresets;
   const kmModeOptions = useMemo(() => buildKmModeOptions(Boolean(openTrip)), [openTrip]);
+  const usesEurForDiesel = gasForm.cost_currency === "EUR" || quickIntakeForm.cost_currency === "EUR";
+
+  const loadEurToChfRate = async () => {
+    setEurToChf((current) => ({ ...current, state: "loading", message: "Loading current exchange rate..." }));
+    try {
+      const result = await fetchEurToChfRate();
+      setEurToChf({ state: "success", ...result, message: "" });
+    } catch (_error) {
+      setEurToChf({ state: "error", rate: null, date: "", message: "Exchange rate unavailable. Try again or use CHF." });
+    }
+  };
+
+  useEffect(() => {
+    if (usesEurForDiesel && eurToChf.state === "idle") {
+      loadEurToChfRate();
+    }
+  }, [usesEurForDiesel, eurToChf.state]);
 
   const tableTrips = useMemo(
     () =>
@@ -1456,7 +1512,7 @@ export default function App() {
       ...prev,
       missed: !prev.missed,
       liters: !prev.missed ? "" : prev.liters,
-      cost_chf: !prev.missed ? "" : prev.cost_chf,
+      cost_amount: !prev.missed ? "" : prev.cost_amount,
     }));
     setGasStatus({ state: "idle", message: "" });
   };
@@ -1576,10 +1632,12 @@ export default function App() {
   const handleGasSubmit = async (event) => {
     event.preventDefault();
     const isEditingGas = Boolean(gasEditId);
+    const enteredCost = Number(gasForm.cost_amount);
+    const convertedCostCHF = gasForm.missed ? 0 : convertToChf(enteredCost, gasForm.cost_currency, eurToChf.rate);
     const entry = {
       user_name: gasForm.user_name.trim(),
       liters: gasForm.missed ? 0 : Number(gasForm.liters),
-      cost_chf: gasForm.missed ? 0 : Number(gasForm.cost_chf),
+      cost_chf: convertedCostCHF,
       odometer_km: Number(gasForm.odometer_km),
       missed: Boolean(gasForm.missed),
       note: gasForm.note.trim(),
@@ -1590,11 +1648,15 @@ export default function App() {
       return;
     }
     if (entry.missed && !entry.note) {
-      setGasStatus({ state: "error", message: "Add a note explaining the missed gas tank entry." });
+      setGasStatus({ state: "error", message: "Add a note explaining the missed diesel tank entry." });
       return;
     }
-    if (!entry.missed && (entry.liters <= 0 || entry.cost_chf <= 0)) {
+    if (!entry.missed && (entry.liters <= 0 || enteredCost <= 0)) {
       setGasStatus({ state: "error", message: "Enter valid liters and cost values." });
+      return;
+    }
+    if (!entry.missed && entry.cost_chf === null) {
+      setGasStatus({ state: "error", message: "Wait for the EUR to CHF exchange rate, or choose CHF." });
       return;
     }
     if (!apiBaseUrl) {
@@ -1701,7 +1763,8 @@ export default function App() {
     setGasForm({
       user_name: entry.user_name,
       liters: String(entry.liters.toFixed(2)),
-      cost_chf: entry.missed ? "" : String(entry.cost_chf.toFixed(2)),
+      cost_amount: entry.missed ? "" : String(entry.cost_chf.toFixed(2)),
+      cost_currency: "CHF",
       odometer_km: String(entry.odometer_km.toFixed(1)),
       missed: Boolean(entry.missed),
       note: entry.note || "",
@@ -1994,13 +2057,18 @@ export default function App() {
 
     if (quickIntakeAction === "gas") {
       const liters = Number(quickIntakeForm.liters);
-      const cost = Number(quickIntakeForm.cost_chf);
+      const enteredCost = Number(quickIntakeForm.cost_amount);
+      const costCHF = convertToChf(enteredCost, quickIntakeForm.cost_currency, eurToChf.rate);
       const odometer = Number(quickIntakeForm.odometer_km);
-      if (!(liters > 0 && cost > 0 && odometer >= 0)) {
-        setQuickIntakeStatus({ state: "error", message: "For gas, enter liters, total cost, and odometer." });
+      if (!(liters > 0 && enteredCost > 0 && odometer >= 0)) {
+        setQuickIntakeStatus({ state: "error", message: "For diesel, enter liters, total cost, and odometer." });
         return;
       }
-      setQuickIntakeStatus({ state: "loading", message: "Saving gas entry..." });
+      if (costCHF === null) {
+        setQuickIntakeStatus({ state: "error", message: "Wait for the EUR to CHF exchange rate, or choose CHF." });
+        return;
+      }
+      setQuickIntakeStatus({ state: "loading", message: "Saving diesel entry..." });
       try {
         const response = await fetch(`${apiBaseUrl}/fuel`, {
           method: "POST",
@@ -2008,20 +2076,20 @@ export default function App() {
           body: JSON.stringify({
             user_name: normalizedPerson,
             liters,
-            fuel_cost_chf: cost,
+            fuel_cost_chf: costCHF,
             odometer_km: odometer,
           }),
         });
         const payload = await response.json();
         if (!response.ok) {
-          setQuickIntakeStatus({ state: "error", message: messageFromApiPayload(payload, "Could not save gas entry.") });
+          setQuickIntakeStatus({ state: "error", message: messageFromApiPayload(payload, "Could not save diesel entry.") });
           return;
         }
       } catch (_error) {
-        setQuickIntakeStatus({ state: "error", message: "Network error while saving gas entry." });
+        setQuickIntakeStatus({ state: "error", message: "Network error while saving diesel entry." });
         return;
       }
-      setQuickIntakeStatus({ state: "success", message: "Saved gas entry. Opening main page..." });
+      setQuickIntakeStatus({ state: "success", message: "Saved diesel entry. Opening main page..." });
       await loadFuelEntries();
       await loadIntakeContext();
       setTimeout(() => setShowQuickIntake(false), 400);
@@ -2091,7 +2159,7 @@ export default function App() {
               ×
             </button>
             <p className="quick-intake-hint">Click × to go to the main page.</p>
-            <h2>Quick trip / gas entry</h2>
+            <h2>Quick trip / diesel entry</h2>
             <p className="subtitle">One decision at a time. The next options adapt to what you click.</p>
             <form className="form" onSubmit={submitQuickIntake}>
               {quickIntakeStage === "person" && (
@@ -2169,7 +2237,7 @@ export default function App() {
                       }}
                     >
                       <strong>Tank fill</strong>
-                      <small>Track liters + CHF + odometer</small>
+                      <small>Track liters + CHF/EUR + odometer</small>
                     </button>
                   </div>
                   <div className="form-actions">
@@ -2257,17 +2325,35 @@ export default function App() {
                           required
                         />
                       </label>
-                      <label className="field">
-                        <span>Total cost (CHF)</span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={quickIntakeForm.cost_chf}
-                          onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, cost_chf: event.target.value }))}
-                          required
-                        />
-                      </label>
+                      <div className="inline-grid diesel-cost-fields">
+                        <label className="field">
+                          <span>Total diesel cost</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={quickIntakeForm.cost_amount}
+                            onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, cost_amount: event.target.value }))}
+                            required
+                          />
+                        </label>
+                        <label className="field">
+                          <span>Currency</span>
+                          <select
+                            value={quickIntakeForm.cost_currency}
+                            onChange={(event) => setQuickIntakeForm((prev) => ({ ...prev, cost_currency: event.target.value }))}
+                          >
+                            <option value="CHF">CHF</option>
+                            <option value="EUR">EUR</option>
+                          </select>
+                        </label>
+                      </div>
+                      <CurrencyConversionNote
+                        amount={quickIntakeForm.cost_amount}
+                        currency={quickIntakeForm.cost_currency}
+                        exchangeRate={eurToChf}
+                        onRetry={loadEurToChfRate}
+                      />
                       <label className="field">
                         <span>Odometer KM</span>
                         <input
@@ -2305,7 +2391,7 @@ export default function App() {
           <div className="view-switcher" role="tablist" aria-label="Ledger views">
             {[
               { id: "km", label: "KM" },
-              { id: "gas", label: "Gas" },
+              { id: "gas", label: "Diesel" },
               { id: "booking", label: "Booking" },
               { id: "costs", label: "Costs" },
               { id: "historical", label: "Historical" },
@@ -2489,7 +2575,7 @@ export default function App() {
             <section className="card">
               <header>
                 <p className="eyebrow">Fuel ledger</p>
-                <h1>{gasEditId ? "Edit Gas Fill" : gasForm.missed ? "Add Missed Gas Tank" : "Log Gas Fill"}</h1>
+                <h1>{gasEditId ? "Edit Diesel Fill" : gasForm.missed ? "Add Missed Diesel Tank" : "Log Diesel Fill"}</h1>
                 <p className="subtitle">
                   {gasForm.missed
                     ? "Mark a tank you forgot to capture so the efficiency chart can skip that interval."
@@ -2497,7 +2583,7 @@ export default function App() {
                 </p>
               </header>
               <button type="button" className={`missed-gas-toggle ${gasForm.missed ? "active" : ""}`} onClick={handleToggleMissedGas}>
-                {gasForm.missed ? "Switch back to normal gas fill" : "Missed gas tank entry"}
+                {gasForm.missed ? "Switch back to normal diesel fill" : "Missed diesel tank entry"}
               </button>
               <form className="form" onSubmit={handleGasSubmit}>
                 <label className="field">
@@ -2528,20 +2614,35 @@ export default function App() {
                         required
                       />
                     </label>
-                    <label className="field">
-                      <span>Total cost (CHF)</span>
-                      <input
-                        type="number"
-                        name="cost_chf"
-                        inputMode="decimal"
-                        min="0"
-                        step="0.01"
-                        placeholder="80.00"
-                        value={gasForm.cost_chf}
-                        onChange={handleGasChange}
-                        required
-                      />
-                    </label>
+                    <div className="inline-grid diesel-cost-fields">
+                      <label className="field">
+                        <span>Total diesel cost</span>
+                        <input
+                          type="number"
+                          name="cost_amount"
+                          inputMode="decimal"
+                          min="0"
+                          step="0.01"
+                          placeholder="80.00"
+                          value={gasForm.cost_amount}
+                          onChange={handleGasChange}
+                          required
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Currency</span>
+                        <select name="cost_currency" value={gasForm.cost_currency} onChange={handleGasChange}>
+                          <option value="CHF">CHF</option>
+                          <option value="EUR">EUR</option>
+                        </select>
+                      </label>
+                    </div>
+                    <CurrencyConversionNote
+                      amount={gasForm.cost_amount}
+                      currency={gasForm.cost_currency}
+                      exchangeRate={eurToChf}
+                      onRetry={loadEurToChfRate}
+                    />
                   </Fragment>
                 )}
                 <label className="field">
@@ -2563,7 +2664,7 @@ export default function App() {
                   <textarea
                     name="note"
                     rows="3"
-                    placeholder={gasForm.missed ? "e.g. Forgot to record the full tank near Lucerne." : "e.g. Gas station, receipt, or context"}
+                    placeholder={gasForm.missed ? "e.g. Forgot to record the full tank near Lucerne." : "e.g. Diesel station, receipt, or context"}
                     value={gasForm.note}
                     onChange={handleGasChange}
                     required={gasForm.missed}
@@ -2575,10 +2676,10 @@ export default function App() {
                     {gasStatus.state === "loading"
                       ? "Saving..."
                       : gasEditId
-                        ? "Update gas entry"
+                        ? "Update diesel entry"
                         : gasForm.missed
                           ? "Save missed tank"
-                          : "Save gas entry"}
+                          : "Save diesel entry"}
                   </button>
                   {gasEditId && (
                     <button type="button" className="ghost" onClick={handleCancelGasEdit}>
@@ -2593,7 +2694,7 @@ export default function App() {
             <section className="card table-card">
               <header>
                 <p className="eyebrow">Fuel table</p>
-                <h2>Gas history</h2>
+                <h2>Diesel history</h2>
               </header>
 
               {gasTableState.state === "error" ? (
@@ -2626,7 +2727,7 @@ export default function App() {
                           <tr key={entry.id}>
                             <td>{new Date(entry.timestamp).toLocaleString()}</td>
                             <td>{entry.user_name}</td>
-                            <td>{entry.missed ? "Missed tank" : "Gas fill"}</td>
+                            <td>{entry.missed ? "Missed tank" : "Diesel fill"}</td>
                             <td>{entry.missed ? "—" : entry.liters.toFixed(2)}</td>
                             <td>{entry.missed ? "—" : entry.cost_chf.toFixed(2)}</td>
                             <td>{entry.odometer_km.toFixed(1)}</td>
@@ -3227,7 +3328,7 @@ export default function App() {
 
             {missedFuelImpacts.length > 0 && (
               <div className="status loading">
-                Missed gas tank markers are excluded from mileage calculations. The insights table resumes with the next
+                Missed diesel tank markers are excluded from mileage calculations. The insights table resumes with the next
                 recorded fill after each marker so unknown liters/cost do not distort km/l, L/100km, or CHF/100km.
               </div>
             )}
