@@ -175,13 +175,13 @@ export const buildSankeyAccountingModel = ({
     }
     vehicleCostRows.push(
       makeMoneyRow({
-        label: "Gas",
+        label: "Diesel",
         person: entry.user_name || "",
-        source: "Gas",
+        source: "Diesel",
         date: datePart(entry.timestamp),
-        description: entry.note || entry.description || "Gas / Treibstoff",
+        description: entry.note || entry.description || "Diesel / Treibstoff",
         amount,
-        formula: "Gas-Eintrag",
+        formula: "Diesel-Eintrag",
         detail: entry.id || "",
       }),
     );
@@ -454,7 +454,7 @@ export const buildSankeyAccountingModel = ({
           label: "Privat bezahlt",
           person: row.person,
           amount: row.privatePaid,
-          formula: "Gas/Kosten privat bezahlt",
+          formula: "Diesel/Kosten privat bezahlt",
         }),
       ],
       explanation: "Private payments are credited because the shared pot owes that person back.",
@@ -562,7 +562,7 @@ export const buildSankeyAccountingModel = ({
     tone: "reimbursement",
     category: "expense_paid",
     rows: [...vehicleCostRows, ...livingCostRows].filter((row) => row.formula.includes("Privat bezahlt")),
-    explanation: "When someone paid gas or shared costs privately, the shared pot should reimburse them.",
+    explanation: "When someone paid for diesel or shared costs privately, the shared pot should reimburse them.",
   });
   pushLink({
     id: "income:shared",
@@ -584,7 +584,7 @@ export const buildSankeyAccountingModel = ({
     tone: "vehicle",
     category: "vehicle_cost",
     rows: vehicleCostRows,
-    explanation: "Vehicle pot covers gas, repairs, insurance, taxes, road fees, service, and maintenance.",
+    explanation: "Vehicle pot covers diesel, repairs, insurance, taxes, road fees, service, and maintenance.",
   });
   pushLink({
     id: "living:costs",
@@ -718,7 +718,7 @@ export const buildSankeyAccountingModel = ({
       amount: historicalAmount,
       detail: "pausiert",
     },
-    { id: "out:vehicle-costs", label: "Fahrzeugkosten", kind: "output", column: 3, tone: "vehicle", amount: vehicleCosts, detail: "Gas, Service, Gebühren" },
+    { id: "out:vehicle-costs", label: "Fahrzeugkosten", kind: "output", column: 3, tone: "vehicle", amount: vehicleCosts, detail: "Diesel, Service, Gebühren" },
     { id: "out:living-costs", label: "Ausbaukosten", kind: "output", column: 3, tone: "living", amount: livingCosts, detail: "Innenraum + Arbeit" },
     { id: "out:reserve", label: "Reserve", kind: "output", column: 3, tone: "reserve", amount: reserve, detail: "future safety" },
     { id: "out:balance", label: "Rest im Konto", kind: "output", column: 3, tone: "balance", amount: potBalance, detail: "Cash bleibt" },
@@ -779,19 +779,19 @@ export const buildSankeyAccountingModel = ({
   });
   addDetail(detailItems, "charge:private-paid", {
     title: "Privat bezahlt",
-    subtitle: "Gas oder gemeinsame Kosten, die schon jemand privat übernommen hat.",
+    subtitle: "Diesel oder gemeinsame Kosten, die schon jemand privat übernommen hat.",
     amount: totalPrivatePaid,
     rows: [...vehicleCostRows, ...livingCostRows].filter((row) => row.formula.includes("Privat bezahlt")),
   });
 
   addDetail(detailItems, "pot:vehicle", {
     title: "Prio 1: Fahrzeug",
-    subtitle: "KM und halbe Nächte decken Gas, Unterhalt, Versicherung und Gebühren.",
+    subtitle: "KM und halbe Nächte decken Diesel, Unterhalt, Versicherung und Gebühren.",
     amount: roundMoney(numberOr(vehiclePot.balance_chf)),
     rows: [
       makeMoneyRow({ label: "KM", amount: numberOr(vehiclePot.km_funding_chf), formula: "Alle KM × km-Rate" }),
       makeMoneyRow({ label: "1/2 Nächte", amount: numberOr(vehiclePot.night_funding_chf), formula: "Nächte × Nacht-Rate ÷ 2" }),
-      makeMoneyRow({ label: "Fahrzeugkosten", amount: vehicleCosts, formula: "Gas + Kosten-Tab Fahrzeug" }),
+      makeMoneyRow({ label: "Fahrzeugkosten", amount: vehicleCosts, formula: "Diesel + Kosten-Tab Fahrzeug" }),
       makeMoneyRow({ label: "Fahrzeug-Saldo", amount: numberOr(vehiclePot.balance_chf), formula: "Finanzierung - Kosten" }),
     ],
   });
@@ -898,7 +898,7 @@ export const buildSankeyAccountingModel = ({
     },
     {
       title: "Fahrzeug",
-      formula: "KM + 1/2 Nächte - Gas/Unterhalt",
+      formula: "KM + 1/2 Nächte - Diesel/Unterhalt",
       example: `CHF ${totalVehicleFunding.toFixed(2)} - CHF ${vehicleCosts.toFixed(2)} = CHF ${roundMoney(numberOr(vehiclePot.balance_chf)).toFixed(2)}`,
     },
     {

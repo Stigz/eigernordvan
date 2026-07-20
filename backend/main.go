@@ -606,7 +606,7 @@ func fuelEventType(payload fuelRequest) string {
 
 func fuelLedgerComment(payload fuelRequest) string {
 	if payload.Missed {
-		return "Missed gas tank marker. Liters/cost omitted so efficiency reports can skip this interval."
+		return "Missed diesel tank marker. Liters/cost omitted so efficiency reports can skip this interval."
 	}
 	return "Append-only MVP entry. Corrections are new events."
 }

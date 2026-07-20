@@ -201,7 +201,7 @@ Dry-run mode returns row counts, account totals, person totals, duplicates, and 
   "historical_import_batches": []
 }
 ```
-This exports a portable full snapshot of all major data domains (km/trips, fuel/gas, bookings, work, costs, normalized accounting entries, accounting settings, monthly closes, historical import batches) plus raw, paginated exports of every configured DynamoDB table for archival backup. The frontend download button turns those raw table exports and accounting recovery sections into an Excel workbook.
+This exports a portable full snapshot of all major data domains (km/trips, fuel/diesel, bookings, work, costs, normalized accounting entries, accounting settings, monthly closes, historical import batches) plus raw, paginated exports of every configured DynamoDB table for archival backup. The frontend download button turns those raw table exports and accounting recovery sections into an Excel workbook.
 
 To create compressed artifacts locally:
 ```bash

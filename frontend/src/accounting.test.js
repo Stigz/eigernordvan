@@ -188,7 +188,7 @@ describe("calculateAccountingProjection", () => {
     expect(projection.sharedPot.balance_chf).toBe(180);
   });
 
-  it("includes gas tab spend as current running cost without a cost entry", () => {
+  it("includes diesel tab spend as current running cost without a cost entry", () => {
     const projection = calculateAccountingProjection({
       settings: { ...settings, monthly_payment_chf: 0 },
       people: ["Nic", "Kayla"],

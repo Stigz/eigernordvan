@@ -48,13 +48,13 @@ describe("buildSankeyAccountingModel", () => {
     expect(model.links.find((link) => link.id === "nights:living").amount).toBe(75);
   });
 
-  it("keeps gas rows in vehicle costs without requiring a Costs entry duplicate", () => {
+  it("keeps diesel rows in vehicle costs without requiring a Costs entry duplicate", () => {
     const model = buildModel({
       fuelEntries: [{ id: "fuel-1", user_name: "Nic", timestamp: "2026-06-10T12:00:00Z", cost_chf: 80 }],
     });
 
     expect(model.vehicleCostRows).toHaveLength(1);
-    expect(model.vehicleCostRows[0]).toMatchObject({ source: "Gas", amount: 80, person: "Nic" });
+    expect(model.vehicleCostRows[0]).toMatchObject({ source: "Diesel", amount: 80, person: "Nic" });
     expect(model.livingCostRows).toHaveLength(0);
     expect(model.totals.vehicleCosts).toBe(80);
   });

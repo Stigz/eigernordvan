@@ -30,7 +30,7 @@ const reasonLabel = (value = "") => {
   return value || "Ausgleich";
 };
 const formatSourceCounts = (counts = {}) =>
-  `${Number(counts.cost_entries || 0)} Kosten, ${Number(counts.fuel_entries || 0)} Gas, ${Number(counts.trip_entries || 0)} Fahrten, ${Number(
+  `${Number(counts.cost_entries || 0)} Kosten, ${Number(counts.fuel_entries || 0)} Diesel, ${Number(counts.trip_entries || 0)} Fahrten, ${Number(
     counts.booking_entries || 0,
   )} Buchungen, ${Number(counts.work_entries || 0)} Arbeit`;
 const formatClosedSourceCounts = (counts = {}) =>
@@ -331,7 +331,7 @@ function Rechenblatt({ model }) {
         <MoneyRowsTable rows={model.auditRows} emptyText="No source rows in this period." />
       </section>
       <section>
-        <h3>Vehicle: gas, maintenance, fees</h3>
+        <h3>Vehicle: diesel, maintenance, fees</h3>
         <MoneyRowsTable rows={model.vehicleCostRows} emptyText="No vehicle costs in this period." />
       </section>
       <section>
@@ -697,7 +697,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
           </article>
           <article>
             <strong>3. Private payments are credited.</strong>
-            <p>If someone pays gas or repairs personally, the shared pot owes them back.</p>
+            <p>If someone pays for diesel or repairs personally, the shared pot owes them back.</p>
           </article>
           <article>
             <strong>4. Work is not cash.</strong>
