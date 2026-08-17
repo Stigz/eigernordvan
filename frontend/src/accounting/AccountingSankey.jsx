@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { formatSwissDate } from "../dateFormatting";
 
 const formatChf = (value) => `CHF ${Number(value || 0).toFixed(2)}`;
 const formatSignedChf = (value) => {
@@ -298,7 +299,7 @@ export function SankeyDetailPanel({ detail }) {
             ) : (
               detail.rows.map((row, index) => (
                 <tr key={`${detail.id}-${row.label}-${index}`}>
-                  <td>{row.date || "-"}</td>
+                  <td>{row.date ? formatSwissDate(row.date, row.date) : "-"}</td>
                   <td>{row.source || "-"}</td>
                   <td>{row.person || "-"}</td>
                   <td className="notes-cell">{row.description || "-"}</td>

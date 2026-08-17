@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { messageFromApiPayload } from "../apiMessages";
+import { formatSwissDate } from "../dateFormatting";
 import {
   addDays,
   buildBookingCalendarCells,
@@ -195,7 +196,7 @@ export default function BookingPanel({ apiBaseUrl, canViewBookingDetails = false
       setBookingStatus({ state: "error", message: "Missing VITE_API_URL configuration. Set it to your API Gateway URL and rebuild." });
       return;
     }
-    const label = booking.guest_name || `${booking.start_date} to ${booking.end_date}`;
+    const label = booking.guest_name || `${formatSwissDate(booking.start_date)} to ${formatSwissDate(booking.end_date)}`;
     if (!window.confirm(`Delete booking for ${label}? This cannot be undone.`)) {
       return;
     }
@@ -440,7 +441,7 @@ export default function BookingPanel({ apiBaseUrl, canViewBookingDetails = false
               const className = `day-cell ${cell.status} ${cell.isCurrentMonth ? "" : "outside"} ${cell.isSelected ? "selected" : ""} ${
                 cell.isSelectionStart ? "selection-start" : ""
               } ${cell.isSelectionEnd ? "selection-end" : ""}`.trim();
-              const ariaLabel = `${cell.iso}: ${cell.status}${cell.isSelected ? ", selected" : ""}`;
+              const ariaLabel = `${formatSwissDate(cell.iso)}: ${cell.status}${cell.isSelected ? ", selected" : ""}`;
 
               return canViewBookingDetails ? (
                 <button
@@ -492,8 +493,8 @@ export default function BookingPanel({ apiBaseUrl, canViewBookingDetails = false
 
                     return (
                       <tr key={booking.id}>
-                        <td>{booking.start_date}</td>
-                        <td>{booking.end_date}</td>
+                        <td>{formatSwissDate(booking.start_date)}</td>
+                        <td>{formatSwissDate(booking.end_date)}</td>
                         <td>{booking.status}</td>
                         <td>
                           <span className={`booking-type-pill ${bookingIsInternal ? "internal" : "guest"}`}>{bookingIsInternal ? "Internal" : "Guest"}</span>

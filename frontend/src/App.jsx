@@ -15,6 +15,13 @@ import {
 import BookingPanel from "./booking/BookingPanel";
 import { convertToChf, fetchEurToChfRate } from "./currency";
 import {
+  formatDateISO,
+  formatSwissDate,
+  formatSwissDateTime,
+  formatSwissMonth,
+  formatSwissTimestampDate,
+} from "./dateFormatting";
+import {
   compareFuelEntriesByTime,
   compareKnownFuelEntriesByOdometer,
   findNeighboringKnownFills,
@@ -90,7 +97,7 @@ const CurrencyConversionNote = ({ amount, currency, exchangeRate, onRetry }) => 
   return (
     <p className="currency-conversion success">
       1 EUR = {exchangeRate.rate.toFixed(4)} CHF
-      {exchangeRate.date ? ` (${exchangeRate.date})` : ""}
+      {exchangeRate.date ? ` (${formatSwissDate(exchangeRate.date)})` : ""}
       {amountCHF !== null && Number(amount) > 0 ? ` · EUR ${Number(amount).toFixed(2)} = CHF ${amountCHF.toFixed(2)}` : ""}
     </p>
   );
@@ -215,15 +222,9 @@ const inferCostCategory = (description, type) => {
   return "general";
 };
 
-const formatDateISO = (date) => date.toISOString().slice(0, 10);
-
 const parseIsoDate = (value) => new Date(`${value}T00:00:00`);
 
-const monthLabel = (date) =>
-  date.toLocaleDateString(undefined, {
-    month: "long",
-    year: "numeric",
-  });
+const monthLabel = formatSwissMonth;
 
 const fuelStorageKey = "van_fuel_entries_v1";
 const workStorageKey = "van_work_planner_v1";
@@ -2505,7 +2506,7 @@ export default function App() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Time (UTC)</th>
+                        <th>Date/time (Zurich)</th>
                         <th>User</th>
                         <th>Start</th>
                         <th>End</th>
@@ -2539,7 +2540,7 @@ export default function App() {
                             </tr>
                           ) : (
                             <tr key={row.trip.id}>
-                              <td>{new Date(row.trip.timestamp).toLocaleString()}</td>
+                              <td>{formatSwissDateTime(row.trip.timestamp)}</td>
                               <td>{row.trip.user_name}</td>
                               <td>{row.trip.start_km.toFixed(1)}</td>
                               <td>{row.trip.end_km.toFixed(1)}</td>
@@ -2722,7 +2723,7 @@ export default function App() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Time (UTC)</th>
+                        <th>Date/time (Zurich)</th>
                         <th>User</th>
                         <th>Type</th>
                         <th>Liters</th>
@@ -2744,7 +2745,7 @@ export default function App() {
                       ) : (
                         sortedGasEntries.map((entry) => (
                           <tr key={entry.id}>
-                            <td>{new Date(entry.timestamp).toLocaleString()}</td>
+                            <td>{formatSwissDateTime(entry.timestamp)}</td>
                             <td>{entry.user_name}</td>
                             <td>{entry.missed ? "Missed full fill" : "Diesel fill"}</td>
                             <td>{entry.missed ? "—" : entry.liters.toFixed(2)}</td>
@@ -3089,7 +3090,7 @@ export default function App() {
                     ) : (
                       filteredCostEntries.map((entry) => (
                         <tr key={entry.id}>
-                          <td>{entry.date}</td>
+                          <td>{formatSwissDate(entry.date)}</td>
                           <td>{entry.type}</td>
                           <td>{entry.description}</td>
                           <td>{categoryLabelMap[entry.category] || entry.category}</td>
@@ -3297,7 +3298,7 @@ export default function App() {
                           <td>{entry.person}</td>
                           <td>{Number(entry.days || 0).toFixed(1)}</td>
                           <td className="notes-cell">{entry.work_notes}</td>
-                          <td>{entry.updated_at ? new Date(entry.updated_at).toLocaleDateString() : "—"}</td>
+                          <td>{formatSwissTimestampDate(entry.updated_at)}</td>
                           <td>
                             <button type="button" className="table-btn danger" onClick={() => handleDeleteWorkEntry(entry.id)}>
                               Delete
@@ -3377,8 +3378,8 @@ export default function App() {
                     })}
                   </svg>
                   <div className="line-chart-legend">
-                    <span>{new Date(efficiencyTrend.points[0].timestamp).toLocaleDateString()}</span>
-                    <span>{new Date(efficiencyTrend.points.at(-1).timestamp).toLocaleDateString()}</span>
+                    <span>{formatSwissTimestampDate(efficiencyTrend.points[0].timestamp)}</span>
+                    <span>{formatSwissTimestampDate(efficiencyTrend.points.at(-1).timestamp)}</span>
                   </div>
                 </>
               )}
@@ -3389,7 +3390,7 @@ export default function App() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Missed time (UTC)</th>
+                      <th>Missed date/time (Zurich)</th>
                       <th>User</th>
                       <th>Marker km</th>
                       <th>Skipped from km</th>
@@ -3402,7 +3403,7 @@ export default function App() {
                       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
                       .map((item) => (
                         <tr key={item.id}>
-                          <td>{new Date(item.timestamp).toLocaleString()}</td>
+                          <td>{formatSwissDateTime(item.timestamp)}</td>
                           <td>{item.user_name}</td>
                           <td>{item.odometer_km === null ? "—" : item.odometer_km.toFixed(1)}</td>
                           <td>{item.skipped_from_odometer_km === null ? "—" : item.skipped_from_odometer_km.toFixed(1)}</td>
@@ -3419,7 +3420,7 @@ export default function App() {
               <table>
                 <thead>
                   <tr>
-                    <th>Fuel time (UTC)</th>
+                    <th>Fuel date/time (Zurich)</th>
                     <th>User</th>
                     <th>From km</th>
                     <th>To km</th>
@@ -3441,7 +3442,7 @@ export default function App() {
                       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
                       .map((item) => (
                         <tr key={item.id}>
-                          <td>{new Date(item.timestamp).toLocaleString()}</td>
+                          <td>{formatSwissDateTime(item.timestamp)}</td>
                           <td>{item.user_name}</td>
                           <td>{item.from_odometer_km.toFixed(1)}</td>
                           <td>{item.to_odometer_km.toFixed(1)}</td>
