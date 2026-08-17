@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFuelEfficiencyIntervals,
   findNeighboringKnownFills,
+  fuelDataGapFallsBetweenFills,
   fuelEfficiencyStatus,
   isSuspiciousFuelEfficiency,
   missedMarkerFallsBetweenFills,
@@ -43,11 +44,11 @@ describe("fuelEfficiencyStatus", () => {
   });
 
   it("shows that a known missed fill skips the affected interval", () => {
-    expect(fuelEfficiencyStatus({ missed: true, odometer_km: 1250 })).toBe("Interval skipped");
+    expect(fuelEfficiencyStatus({ missed: true, odometer_km: 1250 })).toBe("Calculation skipped");
   });
 
   it("also flags when the missed fill has no kilometer reading", () => {
-    expect(fuelEfficiencyStatus({ missed: true, odometer_km: null })).toBe("Interval skipped · km missing");
+    expect(fuelEfficiencyStatus({ missed: true, odometer_km: null })).toBe("No odometer · calculation skipped");
   });
 
   it("keeps partial fills out of standalone intervals", () => {
@@ -56,7 +57,7 @@ describe("fuelEfficiencyStatus", () => {
 
   it("explains that efficiency is unavailable when a recorded fill has no odometer", () => {
     expect(fuelEfficiencyStatus({ missed: false, partial: false, odometer_km: null })).toBe(
-      "No km · efficiency unavailable",
+      "No odometer · calculation skipped",
     );
   });
 });
@@ -106,6 +107,28 @@ describe("buildFuelEfficiencyIntervals", () => {
         { id: "full-1", timestamp: "2026-07-01T10:00:00Z", odometer_km: 1000, liters: 40, cost_chf: 80 },
         { id: "missed", timestamp: "2026-07-05T10:00:00Z", odometer_km: 1300, missed: true, liters: 0, cost_chf: 0 },
         { id: "full-2", timestamp: "2026-07-10T10:00:00Z", odometer_km: 1800, liters: 60, cost_chf: 120 },
+      ],
+      trips,
+    );
+
+    expect(intervals).toEqual([]);
+  });
+
+  it("skips an interval when a saved receipt between full fills has no odometer", () => {
+    const noOdometerFill = {
+      id: "no-odometer",
+      timestamp: "2026-07-05T10:00:00Z",
+      odometer_km: null,
+      liters: 30,
+      cost_chf: 60,
+    };
+    expect(fuelDataGapFallsBetweenFills(noOdometerFill, previousFill, currentFill)).toBe(true);
+
+    const intervals = buildFuelEfficiencyIntervals(
+      [
+        { ...previousFill, liters: 40, cost_chf: 80 },
+        noOdometerFill,
+        { ...currentFill, liters: 60, cost_chf: 120 },
       ],
       trips,
     );
