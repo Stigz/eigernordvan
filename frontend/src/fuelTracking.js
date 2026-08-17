@@ -4,10 +4,10 @@ export const hasKnownOdometer = (entry) => Number.isFinite(entry?.odometer_km) &
 
 export const fuelEfficiencyStatus = (entry) => {
   if (entry?.missed) {
-    return hasKnownOdometer(entry) ? "Interval skipped" : "Interval skipped · km missing";
+    return hasKnownOdometer(entry) ? "Calculation skipped" : "No odometer · calculation skipped";
   }
   if (!hasKnownOdometer(entry)) {
-    return entry?.partial ? "Partial fill · km missing" : "No km · efficiency unavailable";
+    return "No odometer · calculation skipped";
   }
   if (entry?.partial) {
     return "Partial fill · carried forward";
@@ -40,6 +40,17 @@ export const missedMarkerFallsBetweenFills = (marker, previousFill, currentFill)
   return markerTime > timestampValue(previousFill) && markerTime < timestampValue(currentFill);
 };
 
+export const fuelDataGapFallsBetweenFills = (entry, previousFill, currentFill) => {
+  if (!entry || !previousFill || !currentFill) {
+    return false;
+  }
+  if (entry.missed && hasKnownOdometer(entry)) {
+    return entry.odometer_km > previousFill.odometer_km && entry.odometer_km < currentFill.odometer_km;
+  }
+  const entryTime = timestampValue(entry);
+  return entryTime > timestampValue(previousFill) && entryTime < timestampValue(currentFill);
+};
+
 export const findNeighboringKnownFills = (marker, entries) => {
   const knownFills = entries.filter((entry) => !entry.missed && !entry.partial && hasKnownOdometer(entry));
   const ordered = [...knownFills].sort(hasKnownOdometer(marker) ? compareKnownFuelEntriesByOdometer : compareFuelEntriesByTime);
@@ -66,7 +77,7 @@ export const buildFuelEfficiencyIntervals = (entries, trips) => {
     }
     return timestampValue(a) - timestampValue(b);
   });
-  const missedMarkers = entries.filter((entry) => entry.missed);
+  const calculationBreaks = entries.filter((entry) => entry.missed || !hasKnownOdometer(entry));
   const measuredFills = entries
     .filter((entry) => !entry.missed && hasKnownOdometer(entry))
     .sort(compareKnownFuelEntriesByOdometer);
@@ -104,8 +115,8 @@ export const buildFuelEfficiencyIntervals = (entries, trips) => {
     }
 
     const intervalDistanceKm = distanceBetween(previousFullFill.odometer_km, entry.odometer_km);
-    const hasMissedFill = missedMarkers.some((marker) => missedMarkerFallsBetweenFills(marker, previousFullFill, entry));
-    if (!hasMissedFill && intervalDistanceKm > 0 && accumulatedLiters > 0) {
+    const hasDataGap = calculationBreaks.some((gap) => fuelDataGapFallsBetweenFills(gap, previousFullFill, entry));
+    if (!hasDataGap && intervalDistanceKm > 0 && accumulatedLiters > 0) {
       const litersPer100Km = (accumulatedLiters / intervalDistanceKm) * 100;
       const interval = {
         id: entry.id,

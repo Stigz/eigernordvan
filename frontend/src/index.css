@@ -2108,58 +2108,6 @@ th {
   background: #fff;
 }
 
-.missed-fill-check {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 14px;
-  background: #f8fafc;
-  cursor: pointer;
-}
-
-.missed-fill-check.active {
-  border-color: #f59e0b;
-  background: #fffbeb;
-}
-
-.missed-fill-check.disabled {
-  cursor: not-allowed;
-  opacity: 0.68;
-}
-
-.partial-fill-check.active {
-  border-color: #2563eb;
-  background: #eff6ff;
-}
-
-.partial-fill-check input {
-  accent-color: #2563eb;
-}
-
-.missed-fill-check input {
-  width: auto;
-  margin-top: 3px;
-  accent-color: #d97706;
-}
-
-.missed-fill-check span {
-  display: grid;
-  gap: 3px;
-}
-
-.missed-fill-check strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.missed-fill-check small {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
 .field-hint {
   color: #64748b;
   font-size: 12px;

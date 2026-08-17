@@ -904,6 +904,7 @@ export default function App() {
     [gasEntries, gasEditId],
   );
   const cannotConvertRecordedFillToMissed = Boolean(editingGasEntry && !editingGasEntry.missed);
+  const gasFillType = gasForm.missed ? "missed" : gasForm.partial ? "partial" : "full";
 
   const conflictMap = useMemo(() => {
     const map = new Map();
@@ -946,6 +947,11 @@ export default function App() {
   const suspiciousFuelIntervals = useMemo(
     () => fuelEfficiencyIntervals.filter((interval) => interval.suspicious),
     [fuelEfficiencyIntervals],
+  );
+
+  const fuelEntriesWithoutOdometer = useMemo(
+    () => gasEntries.filter((entry) => !entry.missed && entry.odometer_km === null),
+    [gasEntries],
   );
 
   const trustedFuelEfficiencyIntervals = useMemo(
@@ -1012,9 +1018,14 @@ export default function App() {
         hint: "Fuel cost intensity",
       },
       {
-        label: "Missed tanks",
+        label: "Forgotten fills",
         value: String(missedFuelImpacts.length),
-        hint: missedFuelImpacts.length ? "Mileage intervals split at markers" : "No missed markers",
+        hint: missedFuelImpacts.length ? "Affected calculations skipped" : "None recorded",
+      },
+      {
+        label: "Missing odometers",
+        value: String(fuelEntriesWithoutOdometer.length),
+        hint: fuelEntriesWithoutOdometer.length ? "Receipts saved; calculations skipped" : "All recorded",
       },
       {
         label: "Check needed",
@@ -1022,7 +1033,12 @@ export default function App() {
         hint: suspiciousFuelIntervals.length ? "Excluded from summary averages" : "No unlikely intervals",
       },
     ];
-  }, [trustedFuelEfficiencyIntervals, missedFuelImpacts.length, suspiciousFuelIntervals.length]);
+  }, [
+    trustedFuelEfficiencyIntervals,
+    missedFuelImpacts.length,
+    fuelEntriesWithoutOdometer.length,
+    suspiciousFuelIntervals.length,
+  ]);
 
   const efficiencyTrend = useMemo(() => {
     const trendPoints = [...trustedFuelEfficiencyIntervals]
@@ -1481,20 +1497,15 @@ export default function App() {
     setGasForm((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSetMissedGas = (missed) => {
+  const handleGasFillTypeChange = (event) => {
+    const fillType = event.target.value;
     setGasForm((prev) => ({
       ...prev,
-      missed,
-      partial: missed ? false : prev.partial,
+      missed: fillType === "missed",
+      partial: fillType === "partial",
     }));
     setGasStatus({ state: "idle", message: "" });
   };
-
-  const handleSetPartialGas = (partial) => {
-    setGasForm((prev) => ({ ...prev, partial, missed: partial ? false : prev.missed }));
-    setGasStatus({ state: "idle", message: "" });
-  };
-
 
   const handleWorkEntryFormChange = (event) => {
     const { name, value } = event.target;
@@ -2578,7 +2589,7 @@ export default function App() {
               <header>
                 <p className="eyebrow">Diesel ledger</p>
                 <h1>{gasEditId ? "Edit diesel entry" : "Record diesel fill"}</h1>
-                <p className="subtitle">Record a fill, or mark a missed full tank so km/L stays accurate.</p>
+                <p className="subtitle">Save what you know. Missing information will never create a fake efficiency result.</p>
               </header>
               <form className="form" onSubmit={handleGasSubmit}>
                 <label className="field">
@@ -2599,25 +2610,24 @@ export default function App() {
                   <input type="date" name="date" value={gasForm.date} onChange={handleGasChange} required />
                 </label>
 
-                <label
-                  className={`missed-fill-check${gasForm.missed ? " active" : ""}${
-                    cannotConvertRecordedFillToMissed ? " disabled" : ""
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={gasForm.missed}
-                    onChange={(event) => handleSetMissedGas(event.target.checked)}
-                    disabled={cannotConvertRecordedFillToMissed}
-                  />
-                  <span>
-                    <strong>A full fill was completely missed</strong>
-                    <small>
-                      {cannotConvertRecordedFillToMissed
-                        ? "To add a missed fill marker, cancel this edit and create a new entry."
-                        : "Use this only when no receipt entry exists. The affected efficiency interval will be skipped."}
-                    </small>
-                  </span>
+                <label className="field">
+                  <span>Fill type</span>
+                  <select value={gasFillType} onChange={handleGasFillTypeChange}>
+                    <option value="full">Full tank</option>
+                    <option value="partial">Partial tank</option>
+                    <option value="missed" disabled={cannotConvertRecordedFillToMissed}>
+                      Forgotten fill (no receipt)
+                    </option>
+                  </select>
+                  <small className="field-hint">
+                    {cannotConvertRecordedFillToMissed
+                      ? "This saved receipt can be full or partial. Add a forgotten fill as a new entry."
+                      : gasFillType === "partial"
+                        ? "Liters and cost are kept and combined with the next full tank for efficiency."
+                        : gasFillType === "missed"
+                          ? "Use this when a fill happened but no receipt was entered. The affected calculation is skipped."
+                          : "The normal choice when the tank was filled completely."}
+                  </small>
                 </label>
                 {!gasForm.missed && (
                   <Fragment>
@@ -2664,19 +2674,6 @@ export default function App() {
                       exchangeRate={eurToChf}
                       onRetry={loadEurToChfRate}
                     />
-                    <label className={`missed-fill-check partial-fill-check${gasForm.partial ? " active" : ""}`}>
-                      <input
-                        type="checkbox"
-                        checked={gasForm.partial}
-                        onChange={(event) => handleSetPartialGas(event.target.checked)}
-                      />
-                      <span>
-                        <strong>Tank was not filled completely</strong>
-                        <small>
-                          Liters and cost stay saved. Efficiency waits for the next full fill so the calculation remains accurate.
-                        </small>
-                      </span>
-                    </label>
                   </Fragment>
                 )}
                 <label className="field">
@@ -2693,8 +2690,8 @@ export default function App() {
                   />
                   <small className="field-hint">
                     {gasForm.missed
-                      ? "A known approximate value helps place the marker, but it is not required."
-                      : "You can save the fill without it; only the efficiency calculation will be unavailable."}
+                      ? "Add it if known. Otherwise the date is used to skip the affected calculation."
+                      : "Optional. Without it, the receipt is still saved and the affected calculation is skipped."}
                   </small>
                 </label>
                 <label className="field">
@@ -2765,49 +2762,52 @@ export default function App() {
                       ) : (
                         sortedGasEntries.map((entry) => {
                           const interval = fuelIntervalsByEntryId.get(entry.id);
+                          const hasMissingOdometer = !entry.missed && entry.odometer_km === null;
                           return (
-                          <tr key={entry.id} className={interval?.suspicious ? "fuel-row-warning" : ""}>
-                            <td>{formatSwissDateTime(entry.timestamp)}</td>
-                            <td>{entry.user_name}</td>
-                            <td>{entry.missed ? "Missed full fill" : entry.partial ? "Partial fill" : "Full diesel fill"}</td>
-                            <td>{entry.missed ? "—" : entry.liters.toFixed(2)}</td>
-                            <td>{entry.missed ? "—" : entry.cost_chf.toFixed(2)}</td>
-                            <td>{entry.odometer_km === null ? "—" : entry.odometer_km.toFixed(1)}</td>
-                            <td>{entry.missed ? "—" : (entry.cost_chf / entry.liters).toFixed(2)}</td>
-                            <td>
-                              {interval?.suspicious ? (
-                                <span className="fuel-warning">
-                                  ! {interval.liters_per_100km.toFixed(2)} L/100 km · check for a missed/partial fill or wrong km
-                                </span>
-                              ) : interval ? (
-                                <span>
-                                  {interval.liters_per_100km.toFixed(2)} L/100 km
-                                  {interval.partial_fill_count > 0 ? ` · includes ${interval.partial_fill_count} partial` : ""}
-                                </span>
-                              ) : (
-                                fuelEfficiencyStatus(entry)
-                              )}
-                            </td>
-                            <td className="note-cell">{entry.note || "—"}</td>
-                            <td>
-                              <div className="row-actions">
-                                <button
-                                  type="button"
-                                  className="table-btn"
-                                  onClick={() => handleEditGas(entry)}
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  className="table-btn danger"
-                                  onClick={() => handleDeleteGas(entry.id)}
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
+                            <tr key={entry.id} className={interval?.suspicious || hasMissingOdometer ? "fuel-row-warning" : ""}>
+                              <td>{formatSwissDateTime(entry.timestamp)}</td>
+                              <td>{entry.user_name}</td>
+                              <td>{entry.missed ? "Forgotten fill" : entry.partial ? "Partial tank" : "Full tank"}</td>
+                              <td>{entry.missed ? "—" : entry.liters.toFixed(2)}</td>
+                              <td>{entry.missed ? "—" : entry.cost_chf.toFixed(2)}</td>
+                              <td>{entry.odometer_km === null ? "—" : entry.odometer_km.toFixed(1)}</td>
+                              <td>{entry.missed ? "—" : (entry.cost_chf / entry.liters).toFixed(2)}</td>
+                              <td>
+                                {hasMissingOdometer ? (
+                                  <span className="fuel-warning">! No odometer · calculation skipped</span>
+                                ) : interval?.suspicious ? (
+                                  <span className="fuel-warning">
+                                    ! {interval.liters_per_100km.toFixed(2)} L/100 km · check forgotten/partial fill or km
+                                  </span>
+                                ) : interval ? (
+                                  <span>
+                                    {interval.liters_per_100km.toFixed(2)} L/100 km
+                                    {interval.partial_fill_count > 0 ? ` · includes ${interval.partial_fill_count} partial` : ""}
+                                  </span>
+                                ) : (
+                                  fuelEfficiencyStatus(entry)
+                                )}
+                              </td>
+                              <td className="note-cell">{entry.note || "—"}</td>
+                              <td>
+                                <div className="row-actions">
+                                  <button
+                                    type="button"
+                                    className="table-btn"
+                                    onClick={() => handleEditGas(entry)}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="table-btn danger"
+                                    onClick={() => handleDeleteGas(entry.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
                           );
                         })
                       )}
@@ -3385,15 +3385,22 @@ export default function App() {
 
             {missedFuelImpacts.length > 0 && (
               <div className="status loading">
-                Missed fill markers break the affected efficiency interval. The odometer can be blank; a known approximate
-                value only helps place an older marker more precisely.
+                Forgotten fills automatically skip the affected efficiency calculation. An approximate odometer is helpful,
+                but the date is enough when it is unknown.
+              </div>
+            )}
+
+            {fuelEntriesWithoutOdometer.length > 0 && (
+              <div className="status loading">
+                {fuelEntriesWithoutOdometer.length} saved receipt{fuelEntriesWithoutOdometer.length === 1 ? " has" : "s have"}
+                {" "}no odometer. Liters and cost are kept, and the affected efficiency calculation is automatically skipped.
               </div>
             )}
 
             {suspiciousFuelIntervals.length > 0 && (
               <div className="status fuel-warning-status">
                 ! {suspiciousFuelIntervals.length} efficiency interval{suspiciousFuelIntervals.length === 1 ? " is" : "s are"}
-                {" "}below 10 L/100 km. Check for a missed fill, a partial fill, or an incorrect odometer. These intervals are
+                {" "}below 10 L/100 km. Check for a forgotten fill, a partial tank, or an incorrect odometer. These intervals are
                 shown below but excluded from the summary and trend.
               </div>
             )}
@@ -3434,7 +3441,7 @@ export default function App() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Missed date/time (Zurich)</th>
+                      <th>Forgotten fill date/time (Zurich)</th>
                       <th>User</th>
                       <th>Marker km</th>
                       <th>Skipped from km</th>
