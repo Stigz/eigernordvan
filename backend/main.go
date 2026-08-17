@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -28,6 +29,7 @@ type tripRequest struct {
 	UserName string   `json:"user_name"`
 	StartKM  *float64 `json:"start_km,omitempty"`
 	EndKM    *float64 `json:"end_km,omitempty"`
+	Date     string   `json:"date,omitempty"`
 }
 
 type tripResponse struct {
@@ -73,6 +75,8 @@ type fuelRequest struct {
 	Liters      float64  `json:"liters"`
 	FuelCostCHF float64  `json:"fuel_cost_chf"`
 	Missed      bool     `json:"missed"`
+	Partial     bool     `json:"partial"`
+	Date        string   `json:"date,omitempty"`
 	Note        string   `json:"note"`
 }
 
@@ -84,6 +88,7 @@ type fuelRecord struct {
 	Liters      float64 `json:"liters"`
 	FuelCostCHF float64 `json:"fuel_cost_chf"`
 	Missed      bool    `json:"missed"`
+	Partial     bool    `json:"partial"`
 	Note        string  `json:"note,omitempty"`
 	EventType   string  `json:"event_type"`
 }
@@ -467,7 +472,10 @@ func (h *handler) handleCreateTrip(ctx context.Context, request events.APIGatewa
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
-	now := time.Now().UTC()
+	now, err := resolveEventTimestamp(payload.Date, time.Now())
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
 	openTrip, err := h.getLatestOpenTrip(ctx)
 	if err != nil {
 		log.Printf("fetch open trip failed: %v", err)
@@ -601,12 +609,18 @@ func fuelEventType(payload fuelRequest) string {
 	if payload.Missed {
 		return "fuel_missed"
 	}
+	if payload.Partial {
+		return "fuel_partial"
+	}
 	return "fuel_manual"
 }
 
 func fuelLedgerComment(payload fuelRequest) string {
 	if payload.Missed {
 		return "Missed diesel fill marker. Unknown liters/cost are omitted so efficiency reports can skip the affected interval."
+	}
+	if payload.Partial {
+		return "Recorded partial diesel fill. Liters and cost are retained and carried into the next full-to-full efficiency interval."
 	}
 	return "Append-only MVP entry. Corrections are new events."
 }
@@ -634,7 +648,10 @@ func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewa
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
-	now := time.Now().UTC()
+	now, err := resolveEventTimestamp(payload.Date, time.Now())
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
 	itemID := uuid.NewString()
 	eventType := fuelEventType(payload)
 	item := map[string]types.AttributeValue{
@@ -651,7 +668,7 @@ func (h *handler) handleCreateFuel(ctx context.Context, request events.APIGatewa
 	addFuelOdometerAttribute(item, payload.OdometerKM)
 	addFuelNoteAttribute(item, payload.Note)
 
-	_, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &h.tableName,
 		Item:      item,
 	})
@@ -754,7 +771,14 @@ func (h *handler) handleUpdateTrip(ctx context.Context, request events.APIGatewa
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
-	now := time.Now().UTC()
+	referenceTime := time.Now()
+	if parsedExistingTime, parseErr := time.Parse(time.RFC3339, existing.Timestamp); parseErr == nil {
+		referenceTime = parsedExistingTime
+	}
+	now, err := resolveEventTimestamp(payload.Date, referenceTime)
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
 	if err := h.ensureTripRecordsOpen(ctx, existing, tripRecord{Timestamp: now.Format(time.RFC3339)}); err != nil {
 		if errors.Is(err, errAccountingPeriodClosed) {
 			return h.respondError(http.StatusConflict, err.Error()), nil
@@ -848,9 +872,27 @@ func (h *handler) handleUpdateFuel(ctx context.Context, request events.APIGatewa
 		return h.respondError(http.StatusBadRequest, err.Error()), nil
 	}
 
-	now := time.Now().UTC()
+	fuelEntries, err := h.listFuel(ctx)
+	if err != nil {
+		log.Printf("scan fuel before update failed: %v", err)
+		return h.respondError(http.StatusInternalServerError, "failed to update fuel event"), nil
+	}
+	existing, ok := findFuelByID(fuelEntries, id)
+	if !ok {
+		return h.respondError(http.StatusNotFound, "fuel entry not found"), nil
+	}
+	referenceTime := time.Now()
+	if parsedExistingTime, parseErr := time.Parse(time.RFC3339, existing.Timestamp); parseErr == nil {
+		referenceTime = parsedExistingTime
+	}
+	now, err := resolveEventTimestamp(payload.Date, referenceTime)
+	if err != nil {
+		return h.respondError(http.StatusBadRequest, err.Error()), nil
+	}
 	eventType := fuelEventType(payload)
-	if !payload.Missed {
+	if payload.Partial {
+		eventType = "fuel_partial_updated"
+	} else if !payload.Missed {
 		eventType = "fuel_manual_updated"
 	}
 	item := map[string]types.AttributeValue{
@@ -867,7 +909,7 @@ func (h *handler) handleUpdateFuel(ctx context.Context, request events.APIGatewa
 	addFuelOdometerAttribute(item, payload.OdometerKM)
 	addFuelNoteAttribute(item, payload.Note)
 
-	_, err := h.db.PutItem(ctx, &dynamodb.PutItemInput{
+	_, err = h.db.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &h.tableName,
 		Item:      item,
 	})
@@ -2476,7 +2518,8 @@ func (r eventRecord) asTrip() (tripRecord, bool) {
 
 func (r eventRecord) asFuel() (fuelRecord, bool) {
 	missed := r.EventType == "fuel_missed"
-	if !missed && (r.OdometerKM == nil || r.Liters == nil || r.FuelCostCHF == nil) {
+	partial := r.EventType == "fuel_partial" || r.EventType == "fuel_partial_updated"
+	if !missed && (r.Liters == nil || r.FuelCostCHF == nil) {
 		return fuelRecord{}, false
 	}
 	odometerKM := 0.0
@@ -2500,6 +2543,7 @@ func (r eventRecord) asFuel() (fuelRecord, bool) {
 		Liters:      liters,
 		FuelCostCHF: fuelCostCHF,
 		Missed:      missed,
+		Partial:     partial,
 		Note:        r.Note,
 		EventType:   r.EventType,
 	}, true
@@ -2508,6 +2552,9 @@ func (r eventRecord) asFuel() (fuelRecord, bool) {
 func validateTripCreatePayload(payload tripRequest) error {
 	if strings.TrimSpace(payload.UserName) == "" {
 		return errors.New("user_name is required")
+	}
+	if err := validateEventDate(payload.Date); err != nil {
+		return err
 	}
 	if payload.StartKM == nil && payload.EndKM == nil {
 		return errors.New("provide at least one of start_km or end_km")
@@ -2528,6 +2575,9 @@ func validateTripUpdatePayload(payload tripRequest) error {
 	if strings.TrimSpace(payload.UserName) == "" {
 		return errors.New("user_name is required")
 	}
+	if err := validateEventDate(payload.Date); err != nil {
+		return err
+	}
 	if payload.StartKM == nil || payload.EndKM == nil {
 		return errors.New("both start_km and end_km are required when editing")
 	}
@@ -2544,6 +2594,12 @@ func validateFuel(payload fuelRequest) error {
 	if strings.TrimSpace(payload.UserName) == "" {
 		return errors.New("user_name is required")
 	}
+	if err := validateEventDate(payload.Date); err != nil {
+		return err
+	}
+	if payload.Missed && payload.Partial {
+		return errors.New("a fuel entry cannot be both missed and partial")
+	}
 	if payload.Missed {
 		if payload.OdometerKM != nil && *payload.OdometerKM <= 0 {
 			return errors.New("odometer_km must be greater than 0 when provided")
@@ -2553,8 +2609,8 @@ func validateFuel(payload fuelRequest) error {
 		}
 		return nil
 	}
-	if payload.OdometerKM == nil || *payload.OdometerKM <= 0 {
-		return errors.New("odometer_km must be greater than 0")
+	if payload.OdometerKM != nil && *payload.OdometerKM <= 0 {
+		return errors.New("odometer_km must be greater than 0 when provided")
 	}
 	if payload.Liters <= 0 {
 		return errors.New("liters must be greater than 0")
@@ -2563,6 +2619,44 @@ func validateFuel(payload fuelRequest) error {
 		return errors.New("fuel_cost_chf must be greater than 0")
 	}
 	return nil
+}
+
+func validateEventDate(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if _, err := time.Parse("2006-01-02", trimmed); err != nil {
+		return errors.New("date must be in YYYY-MM-DD format")
+	}
+	return nil
+}
+
+func resolveEventTimestamp(dateValue string, reference time.Time) (time.Time, error) {
+	trimmed := strings.TrimSpace(dateValue)
+	if trimmed == "" {
+		return reference.UTC(), nil
+	}
+	dateOnly, err := time.Parse("2006-01-02", trimmed)
+	if err != nil {
+		return time.Time{}, errors.New("date must be in YYYY-MM-DD format")
+	}
+	zurich, err := time.LoadLocation("Europe/Zurich")
+	if err != nil {
+		return time.Time{}, errors.New("failed to load Zurich timezone")
+	}
+	localReference := reference.In(zurich)
+	combined := time.Date(
+		dateOnly.Year(),
+		dateOnly.Month(),
+		dateOnly.Day(),
+		localReference.Hour(),
+		localReference.Minute(),
+		localReference.Second(),
+		0,
+		zurich,
+	)
+	return combined.UTC(), nil
 }
 
 func validateTripUpdate(startKM float64, endKM float64, trips []tripRecord, currentID string) error {
@@ -2590,6 +2684,15 @@ func findTripByID(trips []tripRecord, id string) (tripRecord, bool) {
 		}
 	}
 	return tripRecord{}, false
+}
+
+func findFuelByID(entries []fuelRecord, id string) (fuelRecord, bool) {
+	for _, entry := range entries {
+		if entry.ID == id {
+			return entry, true
+		}
+	}
+	return fuelRecord{}, false
 }
 
 func buildIntakeContext(events []eventRecord, openTrip *tripRecord) (map[string]personContext, *float64) {
@@ -2624,7 +2727,7 @@ func buildIntakeContext(events []eventRecord, openTrip *tripRecord) (map[string]
 				}
 			}
 		}
-		if (event.EventType == "fuel_manual" || event.EventType == "fuel_manual_updated") && event.OdometerKM != nil {
+		if (event.EventType == "fuel_manual" || event.EventType == "fuel_manual_updated" || event.EventType == "fuel_partial" || event.EventType == "fuel_partial_updated") && event.OdometerKM != nil {
 			v := *event.OdometerKM
 			person.LastFuelOdometer = &v
 		}

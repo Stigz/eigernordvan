@@ -15,6 +15,13 @@ const swissTimestampDateFormatter = new Intl.DateTimeFormat("de-CH", {
   timeZone: "Europe/Zurich",
 });
 
+const zurichDatePartsFormatter = new Intl.DateTimeFormat("en-CA", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  timeZone: "Europe/Zurich",
+});
+
 const swissMonthFormatter = new Intl.DateTimeFormat("de-CH", {
   month: "long",
   year: "numeric",
@@ -58,6 +65,20 @@ export const formatSwissDateTime = (value, fallback = "—") => {
 export const formatSwissTimestampDate = (value, fallback = "—") => {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? fallback : swissTimestampDateFormatter.format(parsed);
+};
+
+export const formatZurichDateISO = (value, fallback = "") => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return fallback;
+  }
+  const parts = Object.fromEntries(
+    zurichDatePartsFormatter
+      .formatToParts(parsed)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
 };
 
 export const formatSwissMonth = (date) =>
