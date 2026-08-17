@@ -5,6 +5,7 @@ import {
   formatSwissDateTime,
   formatSwissMonth,
   formatSwissTimestampDate,
+  formatZurichDateISO,
 } from "./dateFormatting";
 
 describe("formatDateISO", () => {
@@ -27,6 +28,7 @@ describe("Swiss date display", () => {
     expect(formatSwissDateTime("2026-08-17T14:30:00Z")).toBe("17.08.2026, 16:30");
     expect(formatSwissDateTime("2026-01-17T14:30:00Z")).toBe("17.01.2026, 15:30");
     expect(formatSwissTimestampDate("2026-08-17T22:30:00Z")).toBe("18.08.2026");
+    expect(formatZurichDateISO("2026-08-17T22:30:00Z")).toBe("2026-08-18");
   });
 
   it("uses the Swiss locale for month labels", () => {

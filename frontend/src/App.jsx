@@ -20,14 +20,13 @@ import {
   formatSwissDateTime,
   formatSwissMonth,
   formatSwissTimestampDate,
+  formatZurichDateISO,
 } from "./dateFormatting";
 import {
+  buildFuelEfficiencyIntervals,
   compareFuelEntriesByTime,
-  compareKnownFuelEntriesByOdometer,
   findNeighboringKnownFills,
   fuelEfficiencyStatus,
-  hasKnownOdometer,
-  missedMarkerFallsBetweenFills,
 } from "./fuelTracking";
 import { buildKmModeOptions, namePresets } from "./quickIntakeFlow";
 
@@ -50,6 +49,7 @@ const initialForm = {
   user_name: "",
   start_km: "",
   end_km: "",
+  date: formatZurichDateISO(new Date()),
 };
 
 const parseOptionalNumberInput = (value) => {
@@ -71,6 +71,8 @@ const initialGasForm = {
   cost_currency: "CHF",
   odometer_km: "",
   missed: false,
+  partial: false,
+  date: formatZurichDateISO(new Date()),
   note: "",
 };
 
@@ -266,9 +268,10 @@ const normalizeFuelEntry = (entry) => {
   const timestamp = typeof entry?.timestamp === "string" ? entry.timestamp : "";
   const note = typeof entry?.note === "string" ? entry.note.trim() : "";
   const missed = Boolean(entry?.missed || entry?.event_type === "fuel_missed");
+  const partial = Boolean(entry?.partial || entry?.event_type === "fuel_partial" || entry?.event_type === "fuel_partial_updated");
   const hasOdometerValue = entry?.odometer_km !== null && entry?.odometer_km !== undefined && entry?.odometer_km !== "";
   const parsedOdometerKM = hasOdometerValue ? Number(entry.odometer_km) : null;
-  const odometerKM = missed && parsedOdometerKM === 0 ? null : parsedOdometerKM;
+  const odometerKM = parsedOdometerKM === 0 ? null : parsedOdometerKM;
 
   if (!id || !userName || !timestamp) {
     return null;
@@ -276,7 +279,7 @@ const normalizeFuelEntry = (entry) => {
   if (!Number.isFinite(liters) || !Number.isFinite(costCHF)) {
     return null;
   }
-  if ((!missed && !Number.isFinite(odometerKM)) || (odometerKM !== null && !Number.isFinite(odometerKM))) {
+  if (odometerKM !== null && !Number.isFinite(odometerKM)) {
     return null;
   }
 
@@ -288,6 +291,7 @@ const normalizeFuelEntry = (entry) => {
     cost_chf: costCHF,
     odometer_km: odometerKM,
     missed,
+    partial,
     note,
     timestamp,
   };
@@ -895,6 +899,12 @@ export default function App() {
     [gasEntries],
   );
 
+  const editingGasEntry = useMemo(
+    () => gasEntries.find((entry) => entry.id === gasEditId) || null,
+    [gasEntries, gasEditId],
+  );
+  const cannotConvertRecordedFillToMissed = Boolean(editingGasEntry && !editingGasEntry.missed);
+
   const conflictMap = useMemo(() => {
     const map = new Map();
     const ascendingTrips = [...trips].sort((a, b) => {
@@ -925,69 +935,23 @@ export default function App() {
   }, [trips]);
 
   const fuelEfficiencyIntervals = useMemo(() => {
-    const orderedTrips = [...trips].sort((a, b) => {
-      if (a.start_km !== b.start_km) {
-        return a.start_km - b.start_km;
-      }
-      return new Date(a.timestamp) - new Date(b.timestamp);
-    });
-
-    const missedMarkers = gasEntries.filter((entry) => entry.missed);
-    const orderedFuelEntries = gasEntries
-      .filter((entry) => !entry.missed && hasKnownOdometer(entry))
-      .sort(compareKnownFuelEntriesByOdometer);
-
-    const getDistanceBetweenOdometers = (startKm, endKm) => {
-      if (!(Number.isFinite(startKm) && Number.isFinite(endKm)) || endKm <= startKm) {
-        return 0;
-      }
-
-      return orderedTrips.reduce((sum, trip) => {
-        const overlapStart = Math.max(startKm, trip.start_km);
-        const overlapEnd = Math.min(endKm, trip.end_km);
-        if (overlapEnd <= overlapStart) {
-          return sum;
-        }
-        return sum + (overlapEnd - overlapStart);
-      }, 0);
-    };
-
-    return orderedFuelEntries
-      .map((entry, index) => {
-        const previous = orderedFuelEntries[index - 1];
-        if (!previous) {
-          return null;
-        }
-
-        if (missedMarkers.some((marker) => missedMarkerFallsBetweenFills(marker, previous, entry))) {
-          return null;
-        }
-
-        const intervalDistanceKm = getDistanceBetweenOdometers(previous.odometer_km, entry.odometer_km);
-        if (!(intervalDistanceKm > 0 && entry.liters > 0)) {
-          return null;
-        }
-
-        const kmPerLiter = intervalDistanceKm / entry.liters;
-        const litersPer100Km = (entry.liters / intervalDistanceKm) * 100;
-        const costPer100Km = (entry.cost_chf / intervalDistanceKm) * 100;
-
-        return {
-          id: entry.id,
-          timestamp: entry.timestamp,
-          user_name: entry.user_name,
-          from_odometer_km: previous.odometer_km,
-          to_odometer_km: entry.odometer_km,
-          interval_distance_km: intervalDistanceKm,
-          liters: entry.liters,
-          cost_chf: entry.cost_chf,
-          km_per_liter: kmPerLiter,
-          liters_per_100km: litersPer100Km,
-          cost_per_100km: costPer100Km,
-        };
-      })
-      .filter(Boolean);
+    return buildFuelEfficiencyIntervals(gasEntries, trips);
   }, [trips, gasEntries]);
+
+  const fuelIntervalsByEntryId = useMemo(
+    () => new Map(fuelEfficiencyIntervals.map((interval) => [interval.id, interval])),
+    [fuelEfficiencyIntervals],
+  );
+
+  const suspiciousFuelIntervals = useMemo(
+    () => fuelEfficiencyIntervals.filter((interval) => interval.suspicious),
+    [fuelEfficiencyIntervals],
+  );
+
+  const trustedFuelEfficiencyIntervals = useMemo(
+    () => fuelEfficiencyIntervals.filter((interval) => !interval.suspicious),
+    [fuelEfficiencyIntervals],
+  );
 
   const missedFuelImpacts = useMemo(() => {
     return gasEntries
@@ -1011,9 +975,11 @@ export default function App() {
   }, [gasEntries]);
 
   const insightSummaryCards = useMemo(() => {
-    const latestInterval = fuelEfficiencyIntervals.at(-1) || null;
+    const latestInterval = trustedFuelEfficiencyIntervals.at(-1) || null;
     const days30Ago = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const last30Intervals = fuelEfficiencyIntervals.filter((item) => new Date(item.timestamp).getTime() >= days30Ago);
+    const last30Intervals = trustedFuelEfficiencyIntervals.filter(
+      (item) => new Date(item.timestamp).getTime() >= days30Ago,
+    );
 
     const avg = (items, key) => {
       if (items.length === 0) {
@@ -1050,11 +1016,16 @@ export default function App() {
         value: String(missedFuelImpacts.length),
         hint: missedFuelImpacts.length ? "Mileage intervals split at markers" : "No missed markers",
       },
+      {
+        label: "Check needed",
+        value: suspiciousFuelIntervals.length ? `! ${suspiciousFuelIntervals.length}` : "0",
+        hint: suspiciousFuelIntervals.length ? "Excluded from summary averages" : "No unlikely intervals",
+      },
     ];
-  }, [fuelEfficiencyIntervals, missedFuelImpacts.length]);
+  }, [trustedFuelEfficiencyIntervals, missedFuelImpacts.length, suspiciousFuelIntervals.length]);
 
   const efficiencyTrend = useMemo(() => {
-    const trendPoints = [...fuelEfficiencyIntervals]
+    const trendPoints = [...trustedFuelEfficiencyIntervals]
       .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
       .map((item) => ({
         id: item.id,
@@ -1072,7 +1043,7 @@ export default function App() {
       height: svgHeight,
       padding,
     };
-  }, [fuelEfficiencyIntervals]);
+  }, [trustedFuelEfficiencyIntervals]);
 
   const sortedWorkEntries = useMemo(
     () =>
@@ -1514,9 +1485,13 @@ export default function App() {
     setGasForm((prev) => ({
       ...prev,
       missed,
-      liters: missed ? "" : prev.liters,
-      cost_amount: missed ? "" : prev.cost_amount,
+      partial: missed ? false : prev.partial,
     }));
+    setGasStatus({ state: "idle", message: "" });
+  };
+
+  const handleSetPartialGas = (partial) => {
+    setGasForm((prev) => ({ ...prev, partial, missed: partial ? false : prev.missed }));
     setGasStatus({ state: "idle", message: "" });
   };
 
@@ -1606,6 +1581,7 @@ export default function App() {
         },
         body: JSON.stringify({
           user_name: form.user_name.trim(),
+          date: form.date,
           ...(startKm !== null ? { start_km: startKm } : {}),
           ...(endKm !== null ? { end_km: endKm } : {}),
         }),
@@ -1624,7 +1600,7 @@ export default function App() {
         : `Saved. Distance: ${payload.delta_km.toFixed(1)} km · Cost: CHF ${payload.trip_cost_chf.toFixed(2)}`;
       setStatus({ state: "success", message });
       setEditId("");
-      setForm((prev) => ({ ...initialForm, user_name: prev.user_name }));
+      setForm((prev) => ({ ...initialForm, user_name: prev.user_name, date: formatZurichDateISO(new Date()) }));
       await loadTrips();
       await loadOpenTrip();
     } catch (_error) {
@@ -1645,6 +1621,8 @@ export default function App() {
       cost_chf: convertedCostCHF,
       odometer_km: odometerKM,
       missed: Boolean(gasForm.missed),
+      partial: Boolean(gasForm.partial),
+      date: gasForm.date,
       note: gasForm.note.trim(),
     };
 
@@ -1656,8 +1634,8 @@ export default function App() {
       setGasStatus({ state: "error", message: "Leave the odometer blank, or enter a value greater than 0." });
       return;
     }
-    if (!entry.missed && (!Number.isFinite(entry.odometer_km) || entry.odometer_km <= 0)) {
-      setGasStatus({ state: "error", message: "Enter a valid odometer value for this fill." });
+    if (!entry.missed && entry.odometer_km !== null && (!Number.isFinite(entry.odometer_km) || entry.odometer_km <= 0)) {
+      setGasStatus({ state: "error", message: "Leave the odometer blank, or enter a value greater than 0." });
       return;
     }
     if (!entry.missed && (entry.liters <= 0 || enteredCost <= 0)) {
@@ -1683,6 +1661,8 @@ export default function App() {
           fuel_cost_chf: entry.cost_chf,
           odometer_km: entry.odometer_km,
           missed: entry.missed,
+          partial: entry.partial,
+          date: entry.date,
           note: entry.note,
         }),
       });
@@ -1697,12 +1677,16 @@ export default function App() {
           ? isEditingGas
             ? "Missed fill marker updated."
             : "Missed fill marked. The affected efficiency interval will be skipped."
+          : entry.partial
+            ? isEditingGas
+              ? "Partial fill updated. Liters and cost are preserved."
+              : "Partial fill saved. It will be carried into the next full-fill interval."
           : isEditingGas
             ? "Fuel entry updated."
             : "Fuel entry added.",
       });
       setGasEditId("");
-      setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name }));
+      setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name, date: formatZurichDateISO(new Date()) }));
       await loadFuelEntries();
       await loadIntakeContext();
     } catch (_error) {
@@ -1717,6 +1701,7 @@ export default function App() {
       user_name: trip.user_name,
       start_km: String(trip.start_km.toFixed(1)),
       end_km: String(trip.end_km.toFixed(1)),
+      date: formatZurichDateISO(trip.timestamp),
     });
     setStatus({ state: "idle", message: "" });
   };
@@ -1728,6 +1713,7 @@ export default function App() {
       user_name: "",
       start_km: String(gap.start_km.toFixed(1)),
       end_km: String(gap.end_km.toFixed(1)),
+      date: formatZurichDateISO(new Date()),
     });
     setStatus({
       state: "success",
@@ -1737,7 +1723,7 @@ export default function App() {
 
   const handleCancelEdit = () => {
     setEditId("");
-    setForm((prev) => ({ ...initialForm, user_name: prev.user_name }));
+    setForm((prev) => ({ ...initialForm, user_name: prev.user_name, date: formatZurichDateISO(new Date()) }));
   };
 
   const handleDelete = async (trip) => {
@@ -1776,6 +1762,8 @@ export default function App() {
       cost_currency: "CHF",
       odometer_km: entry.odometer_km === null ? "" : String(entry.odometer_km.toFixed(1)),
       missed: Boolean(entry.missed),
+      partial: Boolean(entry.partial),
+      date: formatZurichDateISO(entry.timestamp),
       note: entry.note || "",
     });
     setGasStatus({ state: "idle", message: "" });
@@ -1783,7 +1771,7 @@ export default function App() {
 
   const handleCancelGasEdit = () => {
     setGasEditId("");
-    setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name }));
+    setGasForm((prev) => ({ ...initialGasForm, user_name: prev.user_name, date: formatZurichDateISO(new Date()) }));
     setGasStatus({ state: "idle", message: "" });
   };
 
@@ -2446,6 +2434,11 @@ export default function App() {
                 </label>
 
                 <label className="field">
+                  <span>Date</span>
+                  <input type="date" name="date" value={form.date} onChange={handleChange} required />
+                </label>
+
+                <label className="field">
                   <span>Start odometer (km)</span>
                   <input
                     type="number"
@@ -2600,16 +2593,29 @@ export default function App() {
                     required
                   />
                 </label>
-                <label className={`missed-fill-check${gasForm.missed ? " active" : ""}`}>
+
+                <label className="field">
+                  <span>Date</span>
+                  <input type="date" name="date" value={gasForm.date} onChange={handleGasChange} required />
+                </label>
+
+                <label
+                  className={`missed-fill-check${gasForm.missed ? " active" : ""}${
+                    cannotConvertRecordedFillToMissed ? " disabled" : ""
+                  }`}
+                >
                   <input
                     type="checkbox"
                     checked={gasForm.missed}
                     onChange={(event) => handleSetMissedGas(event.target.checked)}
+                    disabled={cannotConvertRecordedFillToMissed}
                   />
                   <span>
-                    <strong>Missed full fill</strong>
+                    <strong>A full fill was completely missed</strong>
                     <small>
-                      Check this if a full tank happened but was not recorded. The affected km/L interval will be skipped.
+                      {cannotConvertRecordedFillToMissed
+                        ? "To add a missed fill marker, cancel this edit and create a new entry."
+                        : "Use this only when no receipt entry exists. The affected efficiency interval will be skipped."}
                     </small>
                   </span>
                 </label>
@@ -2658,26 +2664,38 @@ export default function App() {
                       exchangeRate={eurToChf}
                       onRetry={loadEurToChfRate}
                     />
+                    <label className={`missed-fill-check partial-fill-check${gasForm.partial ? " active" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={gasForm.partial}
+                        onChange={(event) => handleSetPartialGas(event.target.checked)}
+                      />
+                      <span>
+                        <strong>Tank was not filled completely</strong>
+                        <small>
+                          Liters and cost stay saved. Efficiency waits for the next full fill so the calculation remains accurate.
+                        </small>
+                      </span>
+                    </label>
                   </Fragment>
                 )}
                 <label className="field">
-                  <span>{gasForm.missed ? "Odometer (km, recommended)" : "Odometer (km)"}</span>
+                  <span>Odometer (km, optional)</span>
                   <input
                     type="number"
                     name="odometer_km"
                     inputMode="decimal"
                     min="0"
                     step="0.1"
-                    placeholder={gasForm.missed ? "Leave blank if unknown" : "12450.0"}
+                    placeholder="Leave blank if unknown"
                     value={gasForm.odometer_km}
                     onChange={handleGasChange}
-                    required={!gasForm.missed}
                   />
-                  {gasForm.missed && (
-                    <small className="field-hint">
-                      Leave blank if unknown. The table will flag the missing kilometers and the affected interval stays skipped.
-                    </small>
-                  )}
+                  <small className="field-hint">
+                    {gasForm.missed
+                      ? "A known approximate value helps place the marker, but it is not required."
+                      : "You can save the fill without it; only the efficiency calculation will be unavailable."}
+                  </small>
                 </label>
                 <label className="field">
                   <span>Note (optional)</span>
@@ -2698,7 +2716,9 @@ export default function App() {
                         ? "Update diesel entry"
                         : gasForm.missed
                           ? "Save missed fill"
-                          : "Save diesel entry"}
+                          : gasForm.partial
+                            ? "Save partial fill"
+                            : "Save diesel entry"}
                   </button>
                   {gasEditId && (
                     <button type="button" className="ghost" onClick={handleCancelGasEdit}>
@@ -2743,16 +2763,31 @@ export default function App() {
                           </td>
                         </tr>
                       ) : (
-                        sortedGasEntries.map((entry) => (
-                          <tr key={entry.id}>
+                        sortedGasEntries.map((entry) => {
+                          const interval = fuelIntervalsByEntryId.get(entry.id);
+                          return (
+                          <tr key={entry.id} className={interval?.suspicious ? "fuel-row-warning" : ""}>
                             <td>{formatSwissDateTime(entry.timestamp)}</td>
                             <td>{entry.user_name}</td>
-                            <td>{entry.missed ? "Missed full fill" : "Diesel fill"}</td>
+                            <td>{entry.missed ? "Missed full fill" : entry.partial ? "Partial fill" : "Full diesel fill"}</td>
                             <td>{entry.missed ? "—" : entry.liters.toFixed(2)}</td>
                             <td>{entry.missed ? "—" : entry.cost_chf.toFixed(2)}</td>
                             <td>{entry.odometer_km === null ? "—" : entry.odometer_km.toFixed(1)}</td>
                             <td>{entry.missed ? "—" : (entry.cost_chf / entry.liters).toFixed(2)}</td>
-                            <td>{fuelEfficiencyStatus(entry)}</td>
+                            <td>
+                              {interval?.suspicious ? (
+                                <span className="fuel-warning">
+                                  ! {interval.liters_per_100km.toFixed(2)} L/100 km · check for a missed/partial fill or wrong km
+                                </span>
+                              ) : interval ? (
+                                <span>
+                                  {interval.liters_per_100km.toFixed(2)} L/100 km
+                                  {interval.partial_fill_count > 0 ? ` · includes ${interval.partial_fill_count} partial` : ""}
+                                </span>
+                              ) : (
+                                fuelEfficiencyStatus(entry)
+                              )}
+                            </td>
                             <td className="note-cell">{entry.note || "—"}</td>
                             <td>
                               <div className="row-actions">
@@ -2773,7 +2808,8 @@ export default function App() {
                               </div>
                             </td>
                           </tr>
-                        ))
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -3354,6 +3390,14 @@ export default function App() {
               </div>
             )}
 
+            {suspiciousFuelIntervals.length > 0 && (
+              <div className="status fuel-warning-status">
+                ! {suspiciousFuelIntervals.length} efficiency interval{suspiciousFuelIntervals.length === 1 ? " is" : "s are"}
+                {" "}below 10 L/100 km. Check for a missed fill, a partial fill, or an incorrect odometer. These intervals are
+                shown below but excluded from the summary and trend.
+              </div>
+            )}
+
             <div className="line-chart-shell" role="img" aria-label="Line chart showing fuel efficiency trend in km per liter">
               {efficiencyTrend.points.length < 2 ? (
                 <p className="subtitle">Add at least two valid fuel intervals to see an efficiency trend line.</p>
@@ -3428,12 +3472,13 @@ export default function App() {
                     <th>km/l</th>
                     <th>L/100km</th>
                     <th>CHF/100km</th>
+                    <th>Check</th>
                   </tr>
                 </thead>
                 <tbody>
                   {fuelEfficiencyIntervals.length === 0 ? (
                     <tr>
-                      <td colSpan="8" className="empty-cell">
+                      <td colSpan="9" className="empty-cell">
                         No efficiency intervals yet.
                       </td>
                     </tr>
@@ -3441,15 +3486,26 @@ export default function App() {
                     [...fuelEfficiencyIntervals]
                       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
                       .map((item) => (
-                        <tr key={item.id}>
+                        <tr key={item.id} className={item.suspicious ? "fuel-row-warning" : ""}>
                           <td>{formatSwissDateTime(item.timestamp)}</td>
                           <td>{item.user_name}</td>
                           <td>{item.from_odometer_km.toFixed(1)}</td>
                           <td>{item.to_odometer_km.toFixed(1)}</td>
                           <td>{item.interval_distance_km.toFixed(1)}</td>
                           <td>{item.km_per_liter.toFixed(2)}</td>
-                          <td>{item.liters_per_100km.toFixed(2)}</td>
+                          <td className={item.suspicious ? "fuel-warning" : ""}>
+                            {item.suspicious ? "! " : ""}{item.liters_per_100km.toFixed(2)}
+                          </td>
                           <td>{item.cost_per_100km.toFixed(2)}</td>
+                          <td>
+                            {item.suspicious ? (
+                              <span className="fuel-warning">! Check missed/partial fill or km</span>
+                            ) : item.partial_fill_count > 0 ? (
+                              `${item.partial_fill_count} partial fill${item.partial_fill_count === 1 ? "" : "s"} included`
+                            ) : (
+                              "OK"
+                            )}
+                          </td>
                         </tr>
                       ))
                   )}

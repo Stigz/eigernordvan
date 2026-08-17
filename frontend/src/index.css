@@ -2124,6 +2124,20 @@ th {
   background: #fffbeb;
 }
 
+.missed-fill-check.disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+.partial-fill-check.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.partial-fill-check input {
+  accent-color: #2563eb;
+}
+
 .missed-fill-check input {
   width: auto;
   margin-top: 3px;
@@ -2149,6 +2163,21 @@ th {
 .field-hint {
   color: #64748b;
   font-size: 12px;
+}
+
+.fuel-warning {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.fuel-warning-status {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.fuel-row-warning td {
+  background: #fffbeb;
 }
 
 .note-cell {
