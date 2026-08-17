@@ -1,3 +1,5 @@
+import { formatDateISO, formatSwissMonth } from "../dateFormatting";
+
 export const sharedOwnerNames = ["Luki", "Nic", "Kayla", "Jeanne"];
 
 export const bookingStatusPriority = {
@@ -6,20 +8,11 @@ export const bookingStatusPriority = {
   booked: 2,
 };
 
-export const formatDateISO = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
+export { formatDateISO };
 
 export const parseIsoDate = (value) => new Date(`${value}T00:00:00`);
 
-export const monthLabel = (date) =>
-  date.toLocaleDateString(undefined, {
-    month: "long",
-    year: "numeric",
-  });
+export const monthLabel = formatSwissMonth;
 
 export const toMonthStart = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
 

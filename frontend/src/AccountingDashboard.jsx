@@ -16,6 +16,7 @@ import AccountingSankey, { SankeyDetailPanel } from "./accounting/AccountingSank
 import ForecastPanel from "./accounting/ForecastPanel";
 import PersonAccountingCards from "./accounting/PersonAccountingCards";
 import SettlementNowCard from "./accounting/SettlementNowCard";
+import { formatDateISO, formatSwissDate } from "./dateFormatting";
 
 const formatChf = (value) => `CHF ${Number(value || 0).toFixed(2)}`;
 const formatSignedChf = (value) => {
@@ -47,7 +48,7 @@ const formatSettlementSummary = (rows = []) =>
     ? "Keine Zahlungen"
     : rows.map((row) => `${formatParty(row.from_person)} -> ${formatParty(row.to_person)} ${formatChf(row.amount_chf)}`).join("; ");
 
-const currentMonth = () => new Date().toISOString().slice(0, 7);
+const currentMonth = () => formatDateISO(new Date()).slice(0, 7);
 const accountingSettingKeys = [
   "km_rate_chf",
   "night_rate_chf",
@@ -222,7 +223,7 @@ function MoneyRowsTable({ rows = [], emptyText = "Keine Zeilen." }) {
           ) : (
             rows.map((row, index) => (
               <tr key={`${row.label}-${row.detail || row.description}-${index}`}>
-                <td>{row.date || "-"}</td>
+                <td>{row.date ? formatSwissDate(row.date, row.date) : "-"}</td>
                 <td>{row.source || "-"}</td>
                 <td>{row.person || "-"}</td>
                 <td className="notes-cell">{row.description || "-"}</td>
@@ -477,7 +478,7 @@ export default function AccountingDashboard({ apiBaseUrl, costEntries = [], trip
   const [status, setStatus] = useState({ state: "idle", message: "" });
   const period = periodMode === "current_open" ? accountingCurrentOpenPeriod : monthPeriod;
   const isCurrentOpenPeriod = period === accountingCurrentOpenPeriod;
-  const periodLabel = isCurrentOpenPeriod ? `Offen seit ${accountingCurrentOpenStartDate}` : period;
+  const periodLabel = isCurrentOpenPeriod ? `Offen seit ${formatSwissDate(accountingCurrentOpenStartDate)}` : period;
 
   useEffect(() => {
     if (!apiBaseUrl) return;
