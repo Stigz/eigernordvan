@@ -2133,3 +2133,118 @@ th {
   white-space: normal;
   color: #475569;
 }
+
+.person-ledger-totals {
+  margin-bottom: 16px;
+}
+
+.excluded-total-card,
+.simple-excluded-row td {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.simple-ledger-accounting {
+  display: grid;
+  gap: 22px;
+}
+
+.simple-accounting-settings {
+  align-items: end;
+}
+
+.simple-accounting-totals {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.simple-accounting-totals .reserve-card {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.simple-accounting-section {
+  display: grid;
+  gap: 12px;
+}
+
+.simple-accounting-section header h2,
+.simple-settlement-card h3 {
+  margin: 0;
+}
+
+.simple-settlement-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.simple-settlement-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.simple-settlement-card header {
+  display: grid;
+  gap: 5px;
+}
+
+.simple-settlement-card dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.simple-settlement-card dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.simple-settlement-card dt {
+  color: #64748b;
+}
+
+.simple-settlement-card dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.simple-settlement-pay {
+  color: #b91c1c;
+}
+
+.simple-settlement-receive {
+  color: #15803d;
+}
+
+.simple-settlement-even {
+  color: #475569;
+}
+
+.simple-accounting-details {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.simple-accounting-details summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.simple-accounting-details .table-wrap {
+  margin-top: 12px;
+}
+
+@media (max-width: 959px) {
+  .simple-accounting-totals,
+  .simple-settlement-grid {
+    grid-template-columns: 1fr;
+  }
+}

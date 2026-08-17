@@ -29,6 +29,8 @@ import {
   fuelEfficiencyStatus,
 } from "./fuelTracking";
 import { buildKmModeOptions, namePresets } from "./quickIntakeFlow";
+import SimpleAccountingPanel from "./SimpleAccountingPanel";
+import { buildDieselPersonTotals, buildKmPersonTotals } from "./simpleAccounting";
 
 const apiUrl = import.meta.env.VITE_API_URL;
 
@@ -868,6 +870,9 @@ export default function App() {
       }),
     [trips],
   );
+
+  const kmPersonTotals = useMemo(() => buildKmPersonTotals(trips, corePeople), [trips]);
+  const dieselPersonTotals = useMemo(() => buildDieselPersonTotals(gasEntries, corePeople), [gasEntries]);
 
   const tableRows = useMemo(() => {
     const ascending = [...trips].sort((a, b) => {
@@ -2406,6 +2411,7 @@ export default function App() {
               { id: "work", label: "Work" },
               { id: "insights", label: "Insights" },
               { id: "accounting", label: "Accounting" },
+              { id: "accountingArchive", label: "Accounting archive" },
             ].map((view) => (
               <button
                 key={view.id}
@@ -2502,6 +2508,21 @@ export default function App() {
                 <p className="eyebrow">Ledger</p>
                 <h2>Trip history</h2>
               </header>
+
+              <div className="summary-grid compact-summary-grid person-ledger-totals">
+                {kmPersonTotals.people.map((person) => (
+                  <article className="summary-card compact-summary-card" key={person.person}>
+                    <p className="summary-label">{person.person}</p>
+                    <p className="summary-value">{person.km.toFixed(1)} km</p>
+                    <p className="summary-hint">{person.trips} trip{person.trips === 1 ? "" : "s"}</p>
+                  </article>
+                ))}
+                <article className="summary-card compact-summary-card excluded-total-card">
+                  <p className="summary-label">Vermietung</p>
+                  <p className="summary-value">{kmPersonTotals.excludedKm.toFixed(1)} km</p>
+                  <p className="summary-hint">Shown, but never charged</p>
+                </article>
+              </div>
 
               {tableState.state === "error" ? (
                 <div className="status error">{tableState.message}</div>
@@ -2732,6 +2753,16 @@ export default function App() {
                 <p className="eyebrow">Fuel table</p>
                 <h2>Diesel history</h2>
               </header>
+
+              <div className="summary-grid compact-summary-grid person-ledger-totals">
+                {dieselPersonTotals.people.map((person) => (
+                  <article className="summary-card compact-summary-card" key={person.person}>
+                    <p className="summary-label">{person.person}</p>
+                    <p className="summary-value">CHF {person.paidCHF.toFixed(2)}</p>
+                    <p className="summary-hint">{person.liters.toFixed(2)} L · {person.fills} fill{person.fills === 1 ? "" : "s"}</p>
+                  </article>
+                ))}
+              </div>
 
               {gasTableState.state === "error" ? (
                 <div className="status error">{gasTableState.message}</div>
@@ -3523,6 +3554,15 @@ export default function App() {
         )}
 
         {activeView === "accounting" && (
+          <SimpleAccountingPanel
+            costEntries={costState.entries}
+            trips={trips}
+            fuelEntries={gasEntries}
+            people={workPeople}
+          />
+        )}
+
+        {activeView === "accountingArchive" && (
           <AccountingDashboard
             apiBaseUrl={apiBaseUrl}
             costEntries={costState.entries}
